@@ -1,0 +1,6 @@
+faiss-cpu
+numpy
+requests
+tqdm
+yfinance
+pandas
