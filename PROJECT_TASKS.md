@@ -44,3 +44,8 @@ Typical pipeline order:
 4. Build embedding index (`run_embedding_index.py`)
 5. Serve and query (`api/app.py` + `rag/*`)
 6. Run intelligence enrichments (`intelligence/*`) as needed.
+
+
+## Quick refresh script
+- `refresh_data_and_index.py` runs the update pipeline in one command (cleaning -> chunking -> embedding/index build).
+- Optional: pass `--with-ingestion` to include fresh URL ingestion before rebuilding artifacts.
