@@ -1,40 +1,80 @@
-def sector_impact(macro_analysis: str) -> str:
-    return f"""
-You are a lead equity and sector strategist for a major asset manager. Your role is to translate macroeconomic analysis into actionable sector-level investment views.
+from __future__ import annotations
 
-**Based on the macroeconomic analysis provided below:**
+from typing import Any
 
-**Macro Analysis:**
-{macro_analysis}
 
-**Generate a Sector Impact Analysis in the following format:**
+SECTOR_UNIVERSE = [
+    "Energy",
+    "Materials",
+    "Industrials",
+    "Consumer Discretionary",
+    "Consumer Staples",
+    "Health Care",
+    "Financials",
+    "Information Technology",
+    "Communication Services",
+    "Utilities",
+    "Real Estate",
+]
 
-**1. Executive Summary:**
-   - Briefly summarize the key sector themes and the overall recommended positioning (e.g., "Recommending a defensive tilt, overweighting Healthcare and Utilities while underweighting Technology.").
 
-**2. Sector-by-Sector Breakdown:**
+def _bucket_for_regime(regime: str) -> tuple[list[str], list[str], list[str]]:
+    r = (regime or "").upper()
+    if "GOLDILOCKS" in r or "REFLATION" in r or "EARLY_RECOVERY" in r:
+        return (
+            ["Information Technology", "Industrials", "Financials", "Consumer Discretionary"],
+            ["Utilities", "Consumer Staples", "Real Estate"],
+            ["Energy", "Materials", "Health Care", "Communication Services"],
+        )
+    if "RECESSION" in r or "STAGFLATION" in r or "DEFLATION" in r:
+        return (
+            ["Health Care", "Consumer Staples", "Utilities"],
+            ["Consumer Discretionary", "Industrials", "Financials", "Real Estate"],
+            ["Energy", "Materials", "Information Technology", "Communication Services"],
+        )
+    return (
+        ["Health Care", "Information Technology", "Communication Services"],
+        ["Consumer Discretionary", "Real Estate"],
+        ["Energy", "Materials", "Industrials", "Consumer Staples", "Financials", "Utilities"],
+    )
 
-   - **Sectors Poised to Outperform:**
-     - **Sector 1:** [e.g., Energy]
-       - **Rationale:** [Explain the economic reasoning based on the macro analysis. e.g., "Beneficiary of rising commodity prices and inflationary pressures."]
-       - **Conviction:** [High/Medium/Low]
-     - **Sector 2:** [e.g., Healthcare]
-       - **Rationale:** [e.g., "Defensive characteristics, inelastic demand, and attractive valuations in a slowing growth environment."]
-       - **Conviction:** [High/Medium/Low]
 
-   - **Sectors Poised to Underperform:**
-     - **Sector 1:** [e.g., Technology]
-       - **Rationale:** [e.g., "Highly sensitive to rising interest rates which compress valuations. Long-duration cash flows are heavily discounted."]
-       - **Conviction:** [High/Medium/Low]
-     - **Sector 2:** [e.g., Consumer Discretionary]
-       - **Rationale:** [e.g., "Vulnerable to a slowdown in consumer spending due to high inflation and tightening financial conditions."]
-       - **Conviction:** [High/Medium/Low]
+def _conviction(sector: str, overweight: list[str], underweight: list[str]) -> str:
+    if sector in overweight:
+        return "H"
+    if sector in underweight:
+        return "M"
+    return "L"
 
-**3. Relative Value Plays:**
-   - Identify 1-2 interesting relative value opportunities between sectors (e.g., "Overweight Industrials vs. Materials on infrastructure spending tailwinds").
 
-**Instructions:**
-- Present the analysis in the format of a concise, professional investment research note.
-- The rationale for each sector view must be clearly linked to the provided macro analysis.
-- Avoid vague or deterministic language. Use probabilistic terms.
-"""
+def sector_impact(macro_analysis: str, regime: str, mcx_tickers: dict[str, Any]) -> str:
+    """
+    Emit parser-friendly sector calls used by the dashboard:
+      OVERWEIGHT / UNDERWEIGHT / NEUTRAL
+      • Sector | Conviction H/M/L | rationale
+    """
+    _ = mcx_tickers
+    first_line = (macro_analysis or "").splitlines()[0] if macro_analysis else "Macro signal mixed."
+    overweight, underweight, neutral = _bucket_for_regime(regime)
+
+    def make_line(sector: str, stance: str) -> str:
+        conv = _conviction(sector, overweight, underweight)
+        rationale = (
+            f"{stance} on relative earnings/revision sensitivity under {regime.lower()} regime. "
+            f"Anchor: {first_line[:110]}"
+        )
+        return f"• {sector} | Conviction {conv} | {rationale}"
+
+    lines = ["OVERWEIGHT"]
+    lines.extend(make_line(s, "Overweight") for s in overweight)
+    lines.append("")
+    lines.append("UNDERWEIGHT")
+    lines.extend(make_line(s, "Underweight") for s in underweight)
+    lines.append("")
+    lines.append("NEUTRAL")
+    for s in SECTOR_UNIVERSE:
+        if s in overweight or s in underweight:
+            continue
+        lines.append(make_line(s, "Neutral"))
+
+    return "\n".join(lines).strip()

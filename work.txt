@@ -1,0 +1,19 @@
+####install dependencies
+pip install -r requirements.txt
+
+#### start celery worker 
+celery -A tasks worker --loglevel=info
+
+#### run the ingestion script
+python run_realtime_ingestion.py
+
+#### expanding to other data sources
+add more RSS feed URLs to config/realtime_sources.py
+
+
+
+I've created the run_local_ingestion.py script and a sample text file to demonstrate the new local file ingestion feature. This script scans the data/local_sources directory for .txt files and uses a new Celery task, process_text_content, to process their content. To use it, start Redis and the Celery worker with celery -A tasks worker --loglevel=info, then run python run_local_ingestion.py to begin processing files like the included my_note.txt. You can add more text files to the directory for automatic processing, and this script can be adapted for other data sources
+
+
+to makme it work with gui, enter given below command 
+PYTHONEXECUTABLE=/usr/bin/python3.13 python -m uvicorn api.app:app --reload --host 127.0.0.1 --port 8000

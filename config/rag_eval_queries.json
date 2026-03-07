@@ -1,0 +1,113 @@
+{
+  "thresholds": {
+    "retrieval_hit_rate_min": 0.65,
+    "avg_token_overlap_min": 0.08,
+    "citation_valid_ratio_min": 0.9,
+    "grounding_ratio_min": 0.75,
+    "hallucination_risk_max": 0.2,
+    "category_grounding_ratio_min": 0.65,
+    "category_hallucination_risk_max": 0.3
+  },
+  "queries": [
+    {
+      "question": "What is the outlook for India US trade deal impact on markets?",
+      "category": "macro_policy",
+      "must_include_any": ["india", "us", "trade", "tariff", "market"]
+    },
+    {
+      "question": "How can rising policy rates affect consumer demand and corporate margins?",
+      "category": "rates_growth",
+      "must_include_any": ["rate", "policy", "demand", "margin", "inflation"]
+    },
+    {
+      "question": "What are the likely drivers of sudden change in silver prices?",
+      "category": "commodities_fx",
+      "must_include_any": ["silver", "price", "inflation", "dollar", "yield"]
+    },
+    {
+      "question": "How do credit spreads and liquidity conditions change risk appetite?",
+      "category": "credit_liquidity",
+      "must_include_any": ["credit", "spread", "liquidity", "risk", "yield"]
+    },
+    {
+      "question": "How can central bank guidance affect equity and bond performance?",
+      "category": "rates_growth",
+      "must_include_any": ["central", "bank", "policy", "equity", "bond"]
+    },
+    {
+      "question": "What should investors watch next for inflation and growth signals?",
+      "category": "macro_policy",
+      "must_include_any": ["inflation", "growth", "cpi", "pmi", "gdp"]
+    },
+    {
+      "question": "How can a stronger dollar affect emerging market equities and debt?",
+      "category": "commodities_fx",
+      "must_include_any": ["dollar", "emerging", "equities", "debt", "yield"]
+    },
+    {
+      "question": "What market effects can come from a surprise rate cut?",
+      "category": "rates_growth",
+      "must_include_any": ["rate", "cut", "bond", "equity", "inflation"]
+    },
+    {
+      "question": "How do oil price shocks transmit into inflation and consumer spending?",
+      "category": "commodities_fx",
+      "must_include_any": ["oil", "inflation", "consumer", "spending", "energy"]
+    },
+    {
+      "question": "What does tightening financial conditions imply for cyclical sectors?",
+      "category": "credit_liquidity",
+      "must_include_any": ["financial", "conditions", "cyclical", "credit", "liquidity"]
+    },
+    {
+      "question": "How can fiscal deficits and bond supply pressure long-end yields?",
+      "category": "macro_policy",
+      "must_include_any": ["fiscal", "deficit", "bond", "supply", "yield"]
+    },
+    {
+      "question": "How do widening high-yield spreads affect default risk expectations?",
+      "category": "credit_liquidity",
+      "must_include_any": ["high", "yield", "spread", "default", "risk"]
+    },
+    {
+      "question": "What causes rotation between growth and value stocks during policy shifts?",
+      "category": "equities_style",
+      "must_include_any": ["growth", "value", "stocks", "policy", "rotation"]
+    },
+    {
+      "question": "How can weak PMI readings affect earnings outlook and market sentiment?",
+      "category": "rates_growth",
+      "must_include_any": ["pmi", "earnings", "outlook", "market", "sentiment"]
+    },
+    {
+      "question": "What are the leading indicators for recession risk in current conditions?",
+      "category": "macro_policy",
+      "must_include_any": ["recession", "risk", "indicator", "yield", "labor"]
+    },
+    {
+      "question": "How do geopolitical tensions affect safe-haven assets and volatility?",
+      "category": "commodities_fx",
+      "must_include_any": ["geopolitical", "safe", "haven", "volatility", "gold"]
+    },
+    {
+      "question": "How should investors interpret a steeper yield curve after inversion?",
+      "category": "rates_growth",
+      "must_include_any": ["yield", "curve", "inversion", "steeper", "growth"]
+    },
+    {
+      "question": "What does falling market breadth signal when headline indices rise?",
+      "category": "equities_style",
+      "must_include_any": ["breadth", "indices", "rise", "signal", "risk"]
+    },
+    {
+      "question": "How can bank funding stress spill over into broader credit markets?",
+      "category": "credit_liquidity",
+      "must_include_any": ["bank", "funding", "stress", "credit", "markets"]
+    },
+    {
+      "question": "What macro factors can drive simultaneous bond and equity weakness?",
+      "category": "macro_policy",
+      "must_include_any": ["macro", "bond", "equity", "inflation", "rates"]
+    }
+  ]
+}

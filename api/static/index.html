@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Macro Intelligence Console</title>
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Live data ticker bar -->
+  <div class="ticker-bar">
+    <div class="live-clock-bar" id="liveClock"><!-- JS fills this --></div>
+    <div class="ticker-track" id="tickerTrack">
+      <span class="ticker-item"><span class="t-name">Connecting to live data...</span></span>
+    </div>
+  </div>
+
+  <div class="app">
+    <section class="panel">
+      <h2 class="title">Command</h2>
+      <textarea id="question" placeholder="Ask your macro question"></textarea>
+
+      <div class="row mode-row">
+        <div class="field">
+          <label>Geography</label>
+          <select id="geography">
+            <option value="US">US</option>
+            <option value="EU">EU</option>
+            <option value="CHINA">China</option>
+            <option value="GLOBAL">Global</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Horizon</label>
+          <select id="horizon">
+            <option value="SHORT_TERM">Short-Term</option>
+            <option value="MEDIUM_TERM" selected>Med-Term</option>
+            <option value="LONG_TERM">Long-Term</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Mode</label>
+          <select id="responseMode">
+            <option value="brief" selected>Brief</option>
+            <option value="detailed">Detailed</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row3">
+        <button id="runBtn" class="btn-primary">Re-analyze</button>
+        <button id="compareBtn" class="btn-secondary">Side-by-Side</button>
+        <button id="exportBtn" class="btn-ghost">Export Note</button>
+      </div>
+
+      <input id="compareQuestion" placeholder="Second question for comparison" style="margin-top:8px;" />
+
+      <h2 class="title" style="margin-top:12px;">Critical Indicators</h2>
+      <div id="marketDataStamp" class="live-stamp">Live data loading...</div>
+      <div id="indicatorGrid" class="indicator-grid"></div>
+    </section>
+
+    <section class="panel" id="centerPanel">
+      <div class="status">
+        <div id="regimeBadge" class="badge regime warn">REGIME: WAITING</div>
+        <div id="signalBadge" class="badge">CROSS-ASSET: WAITING</div>
+        <div id="modelBadge" class="badge model">MODEL: WAITING</div>
+      </div>
+
+      <div id="confidenceBanner" class="banner"></div>
+      <div id="genStatus" class="gen-status">Idle. Enter a question and click Re-analyze.</div>
+
+      <div id="analysisZone" class="analysis-zone">
+        <div id="plainSummary" class="plain-summary">
+          <strong>What This Means</strong>
+          <div class="summary-grid">
+            <div class="summary-card">
+              <div class="summary-title">Big Picture</div>
+              <div id="summaryBigPicture" class="summary-text">Run analysis to view summary.</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-title">What To Do</div>
+              <div id="summaryAction" class="summary-text">Run analysis to view tactical action.</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-title">Main Risk</div>
+              <div id="summaryRisk" class="summary-text">Run analysis to view risk watchouts.</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-title">Evidence Quality</div>
+              <div id="summaryQuality" class="summary-text">Waiting for model output.</div>
+            </div>
+          </div>
+        </div>
+        <details id="responseCard" class="card" open>
+          <summary>Best Response</summary>
+          <div id="responseText" class="content"></div>
+        </details>
+      </div>
+
+      <div id="compareWrap" class="compare">
+        <div id="compareA" class="compare-pane"></div>
+        <div id="compareB" class="compare-pane"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 class="title">Evidence Coverage</h2>
+      <div id="evidenceCoverage" style="font-family:var(--font-mono);font-size:12px;line-height:1.4;"></div>
+
+      <h2 class="title">Detected Inputs</h2>
+      <div id="detected" style="font-family:var(--font-mono);font-size:12px;line-height:1.4;"></div>
+
+      <h2 class="title" style="margin-top:12px;">Question History</h2>
+      <div id="history"></div>
+    </section>
+  </div>
+
+  <script src="/static/script.js"></script>
+</body>
+</html>

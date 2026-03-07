@@ -1,40 +1,55 @@
-def market_outlook(macro_analysis: str, sector_analysis: str) -> str:
-    return f"""
-You are a top-tier market strategist at a leading investment bank, known for your clear and actionable analysis.
+from __future__ import annotations
 
-**Given the following Macro and Sector Analysis:**
+from datetime import datetime, timedelta
 
-**Macro Analysis:**
-{macro_analysis}
 
-**Sector Impact:**
-{sector_analysis}
+def _regime_bias(regime: str) -> tuple[str, str]:
+    r = (regime or "").upper()
+    if "GOLDILOCKS" in r or "REFLATION" in r or "EARLY_RECOVERY" in r:
+        return (
+            "Soft-landing with improving risk appetite and broadening earnings breadth.",
+            "Stay pro-risk but hedge left-tail volatility around data/event clusters.",
+        )
+    if "RECESSION" in r or "STAGFLATION" in r or "DEFLATION" in r:
+        return (
+            "Growth shock risk remains elevated; earnings revisions likely skew lower.",
+            "Prioritize quality, duration balance, and tactical downside protection.",
+        )
+    return (
+        "Mixed macro with rotating leadership and elevated factor dispersion.",
+        "Use barbell positioning and tighten entry levels around catalysts.",
+    )
 
-**Generate a comprehensive market outlook report with the following structure:**
 
-**1. Executive Summary:**
-   - A brief, high-level summary of the market outlook. Start with a clear "Overall Sentiment" (e.g., Risk-On, Risk-Off, Neutral) and the primary market driver.
+def market_outlook(macro: str, sectors: str, regime: str, portfolio_size: float = 500_000_000) -> str:
+    _ = macro, sectors, portfolio_size
+    market_view, trade_frame = _regime_bias(regime)
+    today = datetime.now()
 
-**2. Market Outlook (3-6 Months):**
-   - **Sentiment:** Elaborate on the prevailing market sentiment and its key drivers.
-   - **Capital Rotation:** Identify the most likely capital rotation dynamics (e.g., from Growth to Value, from Cyclical to Defensive).
-   - **Key Themes:** Highlight 2-3 key investment themes to watch.
+    timeline = [
+        (today + timedelta(days=2), "US ISM / PMI release", "BULL if breadth improves, BEAR if contraction deepens"),
+        (today + timedelta(days=8), "US CPI print", "BULL on downside surprise, BEAR on sticky core inflation"),
+        (today + timedelta(days=14), "Central bank communication", "BULL if easing bias grows, BEAR if policy stays restrictive"),
+        (today + timedelta(days=21), "Labor market update", "BULL for soft-landing data, BEAR if jobless trend accelerates"),
+    ]
 
-**3. Medium-Term Outlook (6-12 Months):**
-   - Provide a forward-looking view on how the market landscape might evolve.
-   - Discuss potential shifts in leadership and sentiment.
+    lines = [
+        f"Regime bias: {regime}",
+        f"Base tactical view: {market_view}",
+        f"Trade framework: {trade_frame}",
+        "",
+        "CATALYST TIMELINE",
+    ]
+    for date, event, impact in timeline:
+        lines.append(f"• {date.strftime('%Y-%m-%d')} {event}: {impact}")
 
-**4. Key Monitoring Points:**
-   - List critical data points (e.g., CPI, PMI, Jobs reports) and upcoming events (e.g., Fed meetings, elections) that could alter this outlook.
-   - For each point, briefly state the potential impact.
+    lines.extend(
+        [
+            "",
+            "Market believes: Disinflation will continue without meaningful growth damage.",
+            "Reality check: Services inflation and credit pass-through can delay policy easing.",
+            "Trade implication: Prefer quality cyclicals over high-beta duration proxies; add hedges into event risk.",
+        ]
+    )
 
-**5. Tactical Positioning:**
-   - Provide actionable recommendations for portfolio positioning (e.g., Overweight/Underweight specific sectors or factors).
-   - Suggest 1-2 specific trade ideas that align with the analysis.
-
-**Instructions:**
-- Use clear and concise language.
-- Use markdown for formatting (headings, bullet points).
-- Be decisive in your recommendations.
-- The entire response should be in a professional, investment-bank tone.
-"""
+    return "\n".join(lines)
