@@ -1,7 +1,7 @@
 import json
 import time
 from datetime import datetime
-from rag_pipeline import NewsRAGPipeline
+from intelligence.rag_pipeline import NewsRAGPipeline
 from run_news_ingestion import ingest_news
 
 class LiveSystemTester:

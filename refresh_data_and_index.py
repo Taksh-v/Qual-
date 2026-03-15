@@ -66,11 +66,13 @@ def main() -> int:
 
     if args.with_ingestion:
         pipeline.append(("News ingestion", cmd("run_news_ingestion.py", is_ingestion=True)))
+        pipeline.append(("SEC ingestion", cmd("run_sec_ingestion.py")))
 
     pipeline.extend(
         [
-            ("Cleaning raw articles", cmd("run_cleaning.py")),
-            ("Chunking cleaned articles", cmd("run_chunking.py")),
+            ("Cleaning raw news articles", cmd("run_cleaning.py")),
+            ("Cleaning SEC filings", cmd("run_sec_cleaning.py")),
+            ("Chunking all documents", cmd("run_chunking.py")),
             ("Building embedding index", cmd("run_embedding_index.py")),
         ]
     )
@@ -86,6 +88,7 @@ def main() -> int:
     print(
         "\n📦 Refresh complete. Your latest custom data should now be reflected in:\n"
         "- data/chunks/news/*\n"
+        "- data/chunks/sec/*\n"
         "- data/vector_db/metadata.json\n"
         "- data/vector_db/news.index\n"
         "\nYou can now run intelligence/macro_engine.py against updated context."

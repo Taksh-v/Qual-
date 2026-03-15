@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,31 @@ def _tokenize(text: str) -> set[str]:
 
 def _extract_citations(answer: str) -> list[int]:
     return [int(x) for x in re.findall(r"\[S(\d+)\]", answer or "")]
+
+
+def _parse_generation_diagnostics(answer: str) -> dict[str, Any]:
+    mode = "unknown"
+    reason = "unknown"
+    deterministic_repair = False
+    compact_retry = False
+    match = re.search(r"Generation diagnostics:\s*([^\n]+)", answer or "", flags=re.IGNORECASE)
+    if match:
+        fields: dict[str, str] = {}
+        for part in match.group(1).split(";"):
+            if "=" not in part:
+                continue
+            key, value = part.split("=", 1)
+            fields[key.strip().lower()] = value.strip().lower()
+        mode = fields.get("mode", mode)
+        reason = fields.get("reason", reason)
+        deterministic_repair = fields.get("deterministic_repair", "no") in {"yes", "true", "1"}
+        compact_retry = fields.get("compact_retry", "no") in {"yes", "true", "1"}
+    return {
+        "mode": mode,
+        "reason": reason,
+        "deterministic_repair": deterministic_repair,
+        "compact_retry": compact_retry,
+    }
 
 
 def _split_claim_lines(answer: str) -> list[str]:
@@ -123,8 +150,21 @@ def _retrieval_hit(question: str, chunks: list[dict[str, Any]], must_include_any
     lexical_hit = 1.0 if evaluate_retrieval_quality(question, chunks)["avg_token_overlap"] >= 0.08 else 0.0
     if not must_include_any:
         return lexical_hit
+        
     corpus = " ".join(c.get("text", "") for c in chunks).lower()
-    hits = sum(1 for tok in must_include_any if tok.lower() in corpus)
+    
+    # Also check if it's explicitly retrieved in metadata
+    metadata_corpus = " ".join([
+        f"{c.get('sector', '')} {c.get('region', '')} {c.get('metadata', {}).get('company', '')}" 
+        for c in chunks
+    ]).lower()
+    
+    hits = 0
+    for tok in must_include_any:
+        tok_lower = tok.lower()
+        if tok_lower in corpus or tok_lower in metadata_corpus:
+            hits += 1
+            
     keyword_hit = hits / len(must_include_any)
     # Blend weak keyword supervision with lexical-overlap signal.
     return round((0.5 * keyword_hit) + (0.5 * lexical_hit), 4)
@@ -191,14 +231,15 @@ def main() -> int:
 
         retrieval_error = None
         try:
-            qvec = embed_query(question)
-            chunks = retrieve_chunks(qvec, index, metadata)
+            qvec = asyncio.run(embed_query(question))
+            chunks = retrieve_chunks(qvec, index, metadata, question=question)
         except Exception as exc:
             retrieval_error = str(exc)
             chunks = retrieve_chunks_lexical(question, metadata)
 
         rquality = evaluate_retrieval_quality(question, chunks)
-        answer, answer_chunks = run_query(question)
+        answer, answer_chunks = asyncio.run(run_query(question))
+        generation_diag = _parse_generation_diagnostics(answer)
         # Use chunks tied to answer if available, else fallback to retrieval list.
         used_chunks = answer_chunks or chunks
 
@@ -218,8 +259,13 @@ def main() -> int:
                 "citation_valid_ratio": _citation_valid_ratio(answer, used_chunks),
                 "grounding_ratio": _supported_claim_ratio(answer, used_chunks),
                 "hallucination_risk": _hallucination_risk(answer, used_chunks),
+                "mode": generation_diag["mode"],
+                "fallback_reason": generation_diag["reason"],
+                "deterministic_repair": generation_diag["deterministic_repair"],
+                "compact_retry": generation_diag["compact_retry"],
             },
             "retrieval_fallback_used": bool(retrieval_error),
+            "generation_fallback_used": generation_diag["mode"] == "fallback",
         }
         results.append(item)
         print(f"✓ Evaluated: {question}")
@@ -233,7 +279,23 @@ def main() -> int:
         "grounding_ratio": round(sum(r["generation"]["grounding_ratio"] for r in results) / n, 4),
         "hallucination_risk": round(sum(r["generation"]["hallucination_risk"] for r in results) / n, 4),
         "retrieval_fallback_rate": round(sum(1 for r in results if r["retrieval_fallback_used"]) / n, 4),
+        "generation_fallback_rate": round(sum(1 for r in results if r["generation_fallback_used"]) / n, 4),
+        "deterministic_repair_rate": round(
+            sum(1 for r in results if r["generation"].get("deterministic_repair")) / n,
+            4,
+        ),
+        "compact_retry_rate": round(
+            sum(1 for r in results if r["generation"].get("compact_retry")) / n,
+            4,
+        ),
     }
+
+    fallback_reason_counts = Counter(
+        r["generation"].get("fallback_reason", "unknown")
+        for r in results
+        if r.get("generation_fallback_used")
+    )
+    summary["generation_fallback_reasons"] = dict(fallback_reason_counts)
 
     categories: dict[str, list[dict[str, Any]]] = {}
     for item in results:
@@ -250,7 +312,8 @@ def main() -> int:
 
     passed, failures = _pass_fail(summary, thresholds)
     cat_ground_min = thresholds.get("category_grounding_ratio_min", 0.65)
-    cat_hall_max = thresholds.get("category_hallucination_risk_max", 0.3)
+    # Stricter requirement now that retrieval is stronger
+    cat_hall_max = thresholds.get("category_hallucination_risk_max", 0.1)
     for cat, s in category_summary.items():
         if s["grounding_ratio"] < cat_ground_min:
             failures.append(f"{cat}.grounding_ratio={s['grounding_ratio']:.3f} < {cat_ground_min:.3f}")

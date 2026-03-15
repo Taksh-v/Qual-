@@ -1,6 +1,7 @@
+import os
 from typing import List, Dict, Optional
-from embedding_engine import EmbeddingEngine
-from ollama_integration import OllamaLLM
+from intelligence.embedding_engine import EmbeddingEngine
+from intelligence.ollama_integration import OllamaLLM
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,7 +13,7 @@ class NewsRAGPipeline:
     """
     
     def __init__(self, 
-                 embedding_model: str = "all-MiniLM-L6-v2",
+                 embedding_model: str | None = None,
                  ollama_host: str = "http://localhost:11434",
                  ollama_model: str = "phi3:mini"):
         """
@@ -23,6 +24,12 @@ class NewsRAGPipeline:
             ollama_host: Ollama API endpoint
             ollama_model: Ollama model name
         """
+        if embedding_model is None:
+            embedding_model = (
+                os.getenv("EMBED_MODEL_FINANCE")
+                or os.getenv("EMBED_MODEL")
+                or "all-MiniLM-L6-v2"
+            )
         self.embedding_engine = EmbeddingEngine(embedding_model)
         self.llm = OllamaLLM(ollama_host, ollama_model)
         self.news_store: List[Dict] = []

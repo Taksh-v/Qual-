@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import logging.config
@@ -7,6 +5,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any
 
 try:
@@ -15,10 +14,20 @@ try:
 except ImportError:
     pass
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse, StreamingResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Request, Security, Depends
+from fastapi.responses import PlainTextResponse, StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+    _SLOWAPI_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _SLOWAPI_AVAILABLE = False
 
 from rag.rag_core import ask_rag
 from rag.query import invalidate_index_cache
@@ -26,12 +35,30 @@ from intelligence.cross_asset_analyzer import analyze_cross_asset
 from intelligence.indicator_parser import (
     extract_indicators_from_text,
     get_regime_inputs_from_indicators,
+    sanitize_indicator_values,
 )
 from intelligence.context_retriever import retrieve_relevant_context
 from intelligence.macro_engine import macro_intelligence_pipeline, get_last_model_used
-from intelligence.live_market_data import fetch_live_indicators, invalidate_live_data_cache
+from intelligence.live_market_data import (
+    fetch_live_indicators,
+    stream_live_indicators,
+    invalidate_live_data_cache,
+    any_price_market_open,
+    market_status_summary,
+)
 from intelligence.question_classifier import classify_question
 from intelligence.regime_detector import detect_regime
+from intelligence.news_health_checker import check_news_health, check_news_health_quick
+from intelligence.response_enhancer import score_response
+from intelligence.query_logger import log_query, read_recent, compute_metrics
+from intelligence.shared_embed_cache import cache_info as embed_cache_info
+from intelligence.sentiment_analyzer import score_sentiment, sentiment_summary
+from ingestion.fundamentals import (
+    get_fundamentals,
+    get_batch_fundamentals,
+    format_fundamentals_summary,
+)
+from ingestion.market_data import get_market_snapshot, format_snapshot_for_prompt
 from config.indicators import INDICATOR_META
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
@@ -48,9 +75,81 @@ logging.getLogger("numexpr.utils").setLevel(logging.WARNING)
 
 app = FastAPI(title="News Intelligence RAG API")
 
+# ── Rate limiter ──────────────────────────────────────────────────────────────
+# Default: 60 req/min globally; expensive LLM endpoints: 20 req/min.
+# Set RATE_LIMIT_DEFAULT and RATE_LIMIT_LLM env vars to override.
+_RL_DEFAULT = os.getenv("RATE_LIMIT_DEFAULT", "60/minute")
+_RL_LLM     = os.getenv("RATE_LIMIT_LLM",     "20/minute")
+if _SLOWAPI_AVAILABLE:
+    _limiter = Limiter(key_func=get_remote_address, default_limits=[_RL_DEFAULT])
+    app.state.limiter = _limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+else:
+    _limiter = None
+
+def _rl(limit_str: str):
+    """Apply *limit_str* rate-limit when slowapi is available; no-op otherwise."""
+    if _limiter is not None:
+        return _limiter.limit(limit_str)
+    return lambda f: f
+
+# ── API-key authentication ────────────────────────────────────────────────────
+# Set API_KEYS env var to a comma-separated list of valid keys.
+# If unset → open / dev mode (all requests pass through).
+_API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+_VALID_API_KEYS: set[str] = set(k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip())
+
+# Paths that are always public, regardless of key config.
+_PUBLIC_PREFIXES = (
+    "/static",
+    "/.well-known",
+    "/health",
+    "/docs",
+    "/openapi",
+    "/redoc",
+    "/favicon.ico",
+)
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    """Enforce X-API-Key on all non-public endpoints when API_KEYS is set."""
+    if not _VALID_API_KEYS:
+        return await call_next(request)  # Dev mode: no keys configured
+    path = request.url.path
+    if path == "/" or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        return await call_next(request)
+    key = request.headers.get("X-API-Key", "")
+    if key not in _VALID_API_KEYS:
+        return JSONResponse(status_code=403, content={"detail": "Invalid or missing API key. Pass X-API-Key header."})
+    return await call_next(request)
+
 app.mount("/static", StaticFiles(directory="api/static"), name="static")
 
-logger.info("News Intelligence RAG API starting up.")
+logger.info("News Intelligence RAG API starting up. Auth=%s RateLimit=%s",
+    "enabled" if _VALID_API_KEYS else "dev-mode", _RL_DEFAULT)
+
+from intelligence.cache_utils import _TieredCache, AsyncCacheStampedeGuard
+
+# ── Response cache for /ask endpoint ─────────────────────────────────────────
+# Avoids re-running the full RAG + LLM pipeline for identical questions
+# within the TTL window (default 5 minutes).
+_ASK_CACHE_TTL: float = float(os.getenv("ASK_CACHE_TTL", "300"))  # seconds
+_ASK_CACHE_MAX: int = 256
+_ask_guard = AsyncCacheStampedeGuard(_TieredCache(), max_size=_ASK_CACHE_MAX)
+
+# ── Response cache for /intelligence/analyze endpoint ─────────────────────────
+# Prevents re-running the full regime + LLM pipeline for repeated questions.
+_INTEL_CACHE_TTL: float = float(os.getenv("INTEL_CACHE_TTL", "300"))
+_INTEL_CACHE_MAX: int = 128
+_intel_guard = AsyncCacheStampedeGuard(_TieredCache(), max_size=_INTEL_CACHE_MAX)
+
+# ── Feedback store (in-memory + JSONL persistence) ────────────────────────────
+import pathlib as _pathlib
+_FEEDBACK_PATH = os.getenv(
+    "FEEDBACK_LOG_PATH",
+    str(_pathlib.Path("data") / "feedback_log.jsonl"),
+)
+_feedback_lock = Lock()
 
 
 @app.get("/.well-known/appspecific/com.chrome.devtools.json", include_in_schema=False)
@@ -77,24 +176,85 @@ class IntelligenceRequest(BaseModel):
     indicator_overrides: dict[str, float] = Field(default_factory=dict)
 
 
+class HedgeRequest(BaseModel):
+    """
+    Request body for /intelligence/hedge.
+    
+    Fields:
+        question:  Describe the risk or portfolio concern.
+                   e.g. "I hold US equities and bonds. How do I hedge rising inflation?"
+        tickers:   Optional list of ticker symbols in the portfolio.
+                   Fundamentals are fetched and injected into the LLM prompt.
+        geography: Regional focus (default: US)
+        horizon:   NEAR_TERM | MEDIUM_TERM | LONG_TERM
+    """
+    question:   str
+    tickers:    list[str] = Field(default_factory=list, max_items=10)
+    geography:  str = "US"
+    horizon:    str = "MEDIUM_TERM"
+
+
 
 # INDICATOR_META is now maintained in config/indicators.py and imported above.
 
 
 @app.post("/ask", response_model=QueryResponse)
-def ask_question(req: QueryRequest):
-    try:
-        return ask_rag(req.question)
-    except Exception as exc:
-        return {
-            "question": req.question,
-            "answer": (
-                "RAG backend is currently degraded. "
-                f"Fallback message: {exc}. "
-                "Check Ollama/index availability."
-            ),
-            "sources": [],
-        }
+@_rl(_RL_LLM)
+async def ask_question(req: QueryRequest, request: Request):
+    question_key = req.question.strip().lower()
+
+    async def _compute_ask() -> dict:
+        t_start = time.time()
+        error_msg: str | None = None
+        try:
+            result = await ask_rag(req.question)
+        except Exception as exc:
+            error_msg = str(exc)
+            result = {
+                "question": req.question,
+                "answer": (
+                    "RAG backend is currently degraded. "
+                    f"Fallback message: {exc}. "
+                    "Check Ollama/index availability."
+                ),
+                "sources": [],
+            }
+
+        latency_ms = int((time.time() - t_start) * 1000)
+        # Source count acts as a proxy for chunk_count on /ask
+        answer_text = result.get("answer", "") if isinstance(result, dict) else str(result)
+        sources = result.get("sources", []) if isinstance(result, dict) else []
+        # Compute sentiment over the answer text
+        sent = score_sentiment(answer_text)
+        # Estimate hallucination risk (reuse grounding score proxy)
+        from intelligence.utils import numeric_hallucination_risk as _hal_risk
+        hal_risk = None
+        try:
+            chunks_for_hal = [{"text": s.get("text", s.get("content", ""))} for s in sources[:5]]
+            hal_risk = _hal_risk(answer_text, chunks_for_hal)
+        except Exception:
+            pass
+        log_query(
+            endpoint="/ask",
+            question=req.question,
+            latency_ms=latency_ms,
+            chunk_count=len(sources),
+            cache_hit=False,
+            hallucination_risk=hal_risk,
+            sentiment_label=sent.get("label"),
+            sentiment_score=sent.get("score"),
+            error=error_msg,
+        )
+        return result
+
+    val, is_fresh = _ask_guard.cache.get(question_key)
+    if is_fresh:
+        logger.info("[ask] cache hit for question: %s", req.question[:80])
+        log_query(endpoint="/ask", question=req.question, cache_hit=True)
+        return val
+
+    # Cache miss — run full pipeline via guard to prevent stampede
+    return await _ask_guard.get_or_compute(question_key, _ASK_CACHE_TTL, _compute_ask)
 
 
 def _safe_float(value: Any) -> float | None:
@@ -120,7 +280,8 @@ def _collect_indicator_inputs(req: IntelligenceRequest) -> tuple[dict[str, float
     context_chunks: list[dict[str, Any]] = []
     context_text = ""
     try:
-        context_chunks = retrieve_relevant_context(req.question, top_k=25, keep_latest=15)
+        # Reduced from top_k=25/keep_latest=15 → 12/8 to cut retrieval + prompt size.
+        context_chunks = retrieve_relevant_context(req.question, top_k=12, keep_latest=8)
         context_text = " ".join(c.get("text", "") for c in context_chunks)
     except Exception:
         context_chunks = []
@@ -135,7 +296,7 @@ def _collect_indicator_inputs(req: IntelligenceRequest) -> tuple[dict[str, float
     from_context = extract_indicators_from_text(context_text)
     from_question = extract_indicators_from_text(req.question)
     # Priority: overrides > extracted from text/question > live FRED
-    all_indicators = {**live_data, **from_context, **from_question, **overrides}
+    all_indicators = sanitize_indicator_values({**live_data, **from_context, **from_question, **overrides})
     return all_indicators, context_chunks
 
 
@@ -194,6 +355,31 @@ def _build_snapshot(req: IntelligenceRequest) -> dict[str, Any]:
             "context_chunks": len(context_chunks),
             "has_overrides": bool(overrides),
             "sources": sources,
+        },
+    }
+
+
+def _fallback_snapshot(req: IntelligenceRequest, reason: str = "") -> dict[str, Any]:
+    missing_inputs = [reason] if reason else ["Snapshot temporarily unavailable"]
+    return {
+        "question": req.question,
+        "geography": req.geography,
+        "horizon": req.horizon,
+        "classification": "Unknown",
+        "regime": {
+            "regime": "UNKNOWN",
+            "confidence": "LOW",
+            "missing_inputs": missing_inputs,
+        },
+        "cross_asset": {
+            "overall_signal": "MIXED",
+        },
+        "critical_indicators": [],
+        "detected_indicators": {},
+        "evidence_coverage": {
+            "context_chunks": 0,
+            "has_overrides": bool(_normalized_overrides(req.indicator_overrides)),
+            "sources": [],
         },
     }
 
@@ -341,9 +527,60 @@ def intelligence_snapshot(req: IntelligenceRequest):
 
 
 @app.post("/intelligence/analyze")
-def intelligence_analyze(req: IntelligenceRequest):
-    snapshot, response_text, model_used = _run_analysis(req)
-    return _make_structured_payload(snapshot, response_text, model_used)
+@_rl(_RL_LLM)
+async def intelligence_analyze(req: IntelligenceRequest, request: Request):
+    # ── Cache check ──────────────────────────────────────────────────────────
+    cache_key = f"{req.question.strip().lower()}|{req.geography}|{req.horizon}|{req.response_mode}"
+
+    async def _compute_intel() -> dict:
+        t_start = time.time()
+        error_msg: str | None = None
+        try:
+            snapshot, response_text, model_used = _run_analysis(req)
+            payload = _make_structured_payload(snapshot, response_text, model_used)
+        except HTTPException as exc:
+            error_msg = str(exc.detail)
+            raise
+        except Exception as exc:
+            error_msg = str(exc)
+            raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+        finally:
+            latency_ms = int((time.time() - t_start) * 1000)
+            if error_msg is None:
+                q = payload.get("quality", {})
+                # Compute sentiment on the response text
+                _resp_text = payload.get("response", "") or ""
+                _sent = score_sentiment(_resp_text)
+                log_query(
+                    endpoint="/intelligence/analyze",
+                    question=req.question,
+                    model_used=payload.get("model_used", "N/A"),
+                    latency_ms=latency_ms,
+                    quality_score=q.get("score"),
+                    quality_band=q.get("band"),
+                    citation_count=q.get("citation_count", 0),
+                    chunk_count=q.get("context_chunks", 0),
+                    cache_hit=False,
+                    sentiment_label=_sent.get("label"),
+                    sentiment_score=_sent.get("score"),
+                )
+            else:
+                log_query(
+                    endpoint="/intelligence/analyze",
+                    question=req.question,
+                    latency_ms=latency_ms,
+                    error=error_msg,
+                )
+        return payload
+
+    val, is_fresh = _intel_guard.cache.get(cache_key)
+    if is_fresh:
+        logger.info("[intelligence/analyze] cache hit")
+        log_query(endpoint="/intelligence/analyze", question=req.question, cache_hit=True)
+        return val
+
+    # ── Wait for compute or cache directly ────────────────────────────────────
+    return await _intel_guard.get_or_compute(cache_key, _INTEL_CACHE_TTL, _compute_intel)
 
 
 @app.post("/intelligence/export", response_class=PlainTextResponse)
@@ -369,10 +606,15 @@ def intelligence_export(req: IntelligenceRequest):
 
 
 @app.post("/intelligence/stream")
-def intelligence_stream(req: IntelligenceRequest):
-    snapshot = _build_snapshot(req)
-
+@_rl(_RL_LLM)
+async def intelligence_stream(req: IntelligenceRequest, request: Request):
     def event_stream():
+        try:
+            snapshot = _build_snapshot(req)
+        except Exception as exc:
+            logger.exception("/intelligence/stream snapshot build failed")
+            snapshot = _fallback_snapshot(req, f"Snapshot unavailable: {exc}")
+
         yield _sse("snapshot", snapshot)
 
         response_text = ""
@@ -396,7 +638,8 @@ def intelligence_stream(req: IntelligenceRequest):
 
             yield _sse("final", _make_structured_payload(snapshot, response_text.strip(), get_last_model_used()))
         except Exception as exc:
-            yield _sse("error", {"message": str(exc)})
+            logger.exception("/intelligence/stream generation failed")
+            yield _sse("error", {"message": str(exc), "type": exc.__class__.__name__})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -423,60 +666,63 @@ def market_data_live():
 
 @app.get("/market_data/stream")
 def market_data_live_stream():
-    """Server-Sent Events stream — pushes live market data every 30 seconds.
-    Emits ``event: update`` with direction/change vs previous tick.
+    """Server-Sent Events stream — progressive partial updates.
+    Emits an ``event: update`` for EACH data source as it completes
+    (yfinance first, then FRED, then WorldBank) so indicators appear
+    on-screen as they arrive rather than all at once.
+    Carries ``partial: true/false`` and ``source`` fields.
+    After a full cycle, sleeps until the next scheduled refresh.
     """
     prev: dict[str, float] = {}
+
+    def _format_live(live: dict, meta: dict) -> dict:
+        """Build the indicator payload dict from a (possibly partial) live dict."""
+        formatted: dict[str, Any] = {}
+        for key, (label, unit) in INDICATOR_META.items():
+            val = live.get(key)
+            if val is None:
+                continue   # omit keys not yet available in this partial
+            prev_val = prev.get(key)
+            direction = "flat"
+            change    = None
+            if prev_val is not None:
+                direction = "up" if val > prev_val else ("down" if val < prev_val else "flat")
+                change    = round(val - prev_val, 6)
+            formatted[key] = {
+                "label":     label,
+                "unit":      unit,
+                "value":     round(val, 4),
+                "direction": direction,
+                "change":    change,
+            }
+            prev[key] = val
+        return formatted
 
     def event_gen():
         nonlocal prev
         while True:
             try:
-                live, meta = fetch_live_indicators()
+                for live, meta in stream_live_indicators():
+                    formatted = _format_live(live, meta)
+                    sleep_s   = 60 if any_price_market_open() else 300
+                    payload   = {
+                        "indicators":        formatted,
+                        "timestamp":         datetime.utcnow().isoformat() + "Z",
+                        "count":             len(formatted),
+                        "partial":           meta.get("partial", False),
+                        "source":            meta.get("source"),
+                        "completed_sources": meta.get("completed_sources", []),
+                        "pending_sources":   meta.get("pending_sources", []),
+                        "fetch_ms":          meta.get("fetch_ms"),
+                        "from_cache":        meta.get("from_cache", False),
+                        "sleep_interval_s":  sleep_s,
+                    }
+                    yield f"event: update\ndata: {json.dumps(payload)}\n\n"
             except Exception as exc:
                 yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
-                time.sleep(30)
-                continue
-
-            formatted: dict[str, Any] = {}
-            for key, (label, unit) in INDICATOR_META.items():
-                val = live.get(key)
-                prev_val = prev.get(key)
-                direction = "flat"
-                change = None
-                if val is not None and prev_val is not None:
-                    if val > prev_val:
-                        direction = "up"
-                    elif val < prev_val:
-                        direction = "down"
-                    change = round(val - prev_val, 6)
-                formatted[key] = {
-                    "label": label,
-                    "unit": unit,
-                    "value": round(val, 4) if val is not None else None,
-                    "direction": direction,
-                    "change": change,
-                    "source": (
-                        meta.get(key, {}).get("source", "FRED")
-                        if isinstance(meta.get(key), dict)
-                        else "FRED"
-                    ),
-                    "as_of": (
-                        meta.get(key, {}).get("date", "")
-                        if isinstance(meta.get(key), dict)
-                        else ""
-                    ),
-                }
-                if val is not None:
-                    prev[key] = val
-
-            payload = {
-                "indicators": formatted,
-                "timestamp": datetime.utcnow().isoformat() + "Z",    # UTC — browser converts to local tz
-                "count": len(live),
-            }
-            yield f"event: update\ndata: {json.dumps(payload)}\n\n"
-            time.sleep(30)
+            sleep_s = 60 if any_price_market_open() else 300
+            yield f"event: tick\ndata: {json.dumps({'next_refresh_s': sleep_s, 'timestamp': datetime.utcnow().isoformat() + 'Z'})}\n\n"
+            time.sleep(sleep_s)
 
     return StreamingResponse(
         event_gen(),
@@ -487,6 +733,12 @@ def market_data_live_stream():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/market_data/status")
+def market_data_status():
+    """Returns open/closed status for all exchange groups and active cache TTLs."""
+    return market_status_summary()
 
 
 @app.get("/health")
@@ -519,6 +771,7 @@ def health_check():
         "status": status,
         "ollama": {"reachable": ollama_ok, "url": ollama_url},
         "faiss_index": {"loaded": index_ok, "vectors": index_size},
+        "embed_cache": embed_cache_info(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -533,6 +786,495 @@ def reload_index():
     invalidate_live_data_cache()
     logger.info("Admin reload-index triggered.")
     return {"status": "ok", "message": "Index cache and live data cache cleared. Next request will reload from disk."}
+
+
+# ── News System Health Endpoints ───────────────────────────────────────────────
+
+@app.get("/news/health")
+def news_health_full():
+    """
+    Full real-time health check of the news fetching system.
+    Checks ALL configured RSS feeds (may take 20-40s).
+    Returns:
+        - Per-feed reachability, parsability, and freshness
+        - Vector index age and size
+        - Ollama LLM availability
+        - Overall health score (0-100) and status (healthy/degraded/critical)
+    """
+    try:
+        report = check_news_health(sample_feeds=0)
+        return {
+            "status": report.overall_status,
+            "health_score": report.health_score,
+            "checked_at": report.checked_at,
+            "feeds": {
+                "total": report.total_feeds,
+                "reachable": report.reachable_feeds,
+                "parsable": report.parsable_feeds,
+                "fresh_lt_24h": report.fresh_feeds,
+                "total_recent_articles": report.total_recent_articles,
+                "avg_latency_ms": report.avg_latency_ms,
+                "unreachable": report.unreachable_feeds[:10],
+                "stale": report.stale_feeds[:10],
+                "errors": report.error_feeds[:10],
+            },
+            "vector_index": {
+                "status": report.index_status,
+                "age_hours": report.index_last_modified_hours,
+                "vector_count": report.index_vector_count,
+            },
+            "llm": {
+                "ollama_reachable": report.ollama_reachable,
+                "models": report.ollama_models,
+            },
+            "warnings": report.warnings,
+        }
+    except Exception as exc:
+        logger.error("[/news/health] check failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Health check failed: {exc}")
+
+
+@app.get("/news/health/quick")
+def news_health_quick():
+    """
+    Quick health check (2 feeds/category, ~5-10s).
+    Suitable for frequent monitoring / liveness probes.
+    """
+    try:
+        report = check_news_health_quick()
+        return {
+            "status": report.overall_status,
+            "health_score": report.health_score,
+            "checked_at": report.checked_at,
+            "feeds": {
+                "total": report.total_feeds,
+                "reachable": report.reachable_feeds,
+                "fresh_lt_24h": report.fresh_feeds,
+            },
+            "vector_index": {
+                "status": report.index_status,
+                "age_hours": report.index_last_modified_hours,
+                "vector_count": report.index_vector_count,
+            },
+            "llm": {
+                "ollama_reachable": report.ollama_reachable,
+            },
+            "warnings": report.warnings,
+        }
+    except Exception as exc:
+        logger.error("[/news/health/quick] check failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Health check failed: {exc}")
+
+
+@app.get("/metrics")
+def get_metrics():
+    """
+    Aggregate quality and performance metrics derived from the query log.
+
+    Returns:
+      - total_queries, cache_hit_rate_pct, error_rate_pct
+      - avg_quality_score, quality_band_dist
+      - avg_latency_ms, p95_latency_ms
+      - model_distribution (which model served N% of requests)
+    """
+    entries = read_recent(n=2000)
+    return compute_metrics(entries)
+
+
+class FeedbackRequest(BaseModel):
+    question: str
+    answer_snippet: str = ""   # first 300 chars of answer for context
+    rating: int                # 1 (bad) – 5 (excellent)
+    comment: str = ""
+
+
+@app.post("/feedback", status_code=201)
+def submit_feedback(req: FeedbackRequest):
+    """
+    Collect user feedback on an answer.  Stored to data/feedback_log.jsonl.
+    Use this to build a curated evaluation set and track quality regression.
+    """
+    if not 1 <= req.rating <= 5:
+        raise HTTPException(status_code=422, detail="rating must be between 1 and 5")
+    entry = {
+        "ts":             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "question":       req.question[:300],
+        "answer_snippet": req.answer_snippet[:300],
+        "rating":         req.rating,
+        "comment":        req.comment[:1000],
+    }
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(_FEEDBACK_PATH)), exist_ok=True)
+        with _feedback_lock:
+            with open(_FEEDBACK_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+    except Exception as exc:
+        logger.error("[feedback] write failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to persist feedback") from exc
+    return {"status": "ok", "message": "Feedback recorded. Thank you."}
+
+
+@app.get("/feedback/summary")
+def feedback_summary():
+    """Return aggregate feedback statistics and the 20 most recent entries."""
+    if not os.path.exists(_FEEDBACK_PATH):
+        return {"message": "No feedback recorded yet", "entries": []}
+    entries: list[dict] = []
+    try:
+        with _feedback_lock:
+            with open(_FEEDBACK_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            entries.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read feedback: {exc}") from exc
+
+    if not entries:
+        return {"message": "No feedback recorded yet", "entries": []}
+
+    ratings = [e["rating"] for e in entries]
+    avg_rating = round(sum(ratings) / len(ratings), 2)
+    dist = {str(i): ratings.count(i) for i in range(1, 6)}
+    return {
+        "total_feedback": len(entries),
+        "avg_rating":     avg_rating,
+        "rating_distribution": dist,
+        "recent": entries[-20:],
+    }
+
+
+# ── Company Fundamentals Endpoint ────────────────────────────────────────────────
+
+@app.get("/fundamentals/{ticker}")
+def fundamentals_single(ticker: str, refresh: bool = False):
+    """
+    Return company fundamental data for a single *ticker* (e.g. AAPL, MSFT).
+
+    Data is disk-cached for 6 hours by default (override with
+    FUNDAMENTALS_CACHE_TTL env var in seconds).
+
+    Pass ?refresh=true to force a live yfinance pull.
+
+    Response includes: valuation ratios, profitability, balance-sheet metrics,
+    analyst estimates and last 4 quarterly earnings.
+    """
+    ticker = ticker.upper().strip()
+    if not ticker:
+        raise HTTPException(status_code=422, detail="ticker must not be empty")
+    try:
+        data = get_fundamentals(ticker, force_refresh=refresh)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Fundamentals fetch failed: {exc}") from exc
+    if "error" in data:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not retrieve fundamentals for {ticker}: {data['error']}",
+        )
+    return data
+
+
+@app.post("/fundamentals/batch")
+def fundamentals_batch(tickers: list[str]):
+    """
+    Fetch fundamentals for multiple tickers in one call.
+    Body: JSON array of ticker strings, e.g. ["AAPL","MSFT","NVDA"].
+    Maximum 10 tickers per request.
+    """
+    if not tickers:
+        raise HTTPException(status_code=422, detail="tickers list must not be empty")
+    if len(tickers) > 10:
+        raise HTTPException(status_code=422, detail="Maximum 10 tickers per request")
+    try:
+        return get_batch_fundamentals(tickers)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Batch fundamentals fetch failed: {exc}") from exc
+
+
+# ── Hedge / Risk-Signal Endpoint ────────────────────────────────────────────────
+
+def _build_hedge_prompt(
+    question: str,
+    regime: dict[str, Any],
+    cross_asset: dict[str, Any],
+    indicators: dict[str, float],
+    fundamentals_text: str,
+    geography: str,
+    horizon: str,
+) -> str:
+    """
+    Build a hedge-focused LLM prompt that combines macro regime, cross-asset
+    signals, live indicators, and any supplied company fundamentals.
+    """
+    # Compact indicator summary
+    _MAP = [
+        ("sp500", "S&P500"), ("vix", "VIX"), ("dxy", "DXY"),
+        ("yield_10y", "10Y%"), ("yield_2y", "2Y%"), ("yield_curve", "Curve_bps"),
+        ("inflation_cpi", "CPI%"), ("fed_funds_rate", "FedFunds%"),
+        ("oil_wti", "WTI$"), ("gold", "Gold$"), ("credit_hy", "HY_bps"),
+    ]
+    num_parts = [f"{lbl}={indicators[k]}" for k, lbl in _MAP if k in indicators]
+    num_line = ", ".join(num_parts[:9]) or "No live data."
+
+    return f"""You are a senior portfolio risk manager.
+Your task: provide specific, actionable hedging strategies for the portfolio concern described below.
+
+Current market regime: {regime.get('regime', 'UNKNOWN')} (confidence: {regime.get('confidence', 'N/A')})
+Cross-asset signal: {cross_asset.get('overall_signal', 'N/A')}
+Live indicators: {num_line}
+Geography focus: {geography} | Investment horizon: {horizon}
+
+Portfolio / concern:
+{question}
+
+{f'Portfolio holdings fundamentals:{chr(10)}{fundamentals_text}{chr(10)}' if fundamentals_text.strip() else ''}
+Instructions:
+1. Tailor hedges to the current regime ({regime.get('regime')}) and cross-asset signal.
+2. Include instrument-specific suggestions (e.g. put options, inverse ETFs, gold, Treasuries, VIX calls).
+3. Size guidance: suggest approximate allocation % per hedge.
+4. Cover both tail-risk and everyday volatility management.
+5. Never invent facts — if unsure, say so.
+
+Respond in EXACTLY this format:
+Executive summary: <2 sentences summarising the key risk and approach>
+Primary risks identified:
+- <risk 1 with supporting indicator or regime evidence>
+- <risk 2>
+- <risk 3>
+Recommended hedges:
+- Instrument: <name/ticker>  |  Rationale: <why>  |  Suggested allocation: <x%>
+- Instrument: <name/ticker>  |  Rationale: <why>  |  Suggested allocation: <x%>
+- Instrument: <name/ticker>  |  Rationale: <why>  |  Suggested allocation: <x%>
+Portfolio adjustments:
+- <positioning change 1>
+- <positioning change 2>
+Scenario stress-test:
+- Bear case: <outcome if hedges fail>
+- Bull case: <cost of hedges if market rises>
+Confidence: <HIGH/MEDIUM/LOW> - <reason>
+Answer:""".strip()
+
+
+@app.post("/intelligence/hedge")
+@_rl(_RL_LLM)
+def intelligence_hedge(req: HedgeRequest, request: Request):
+    """
+    Generate hedging and risk-mitigation suggestions based on:
+      - Current macro regime + cross-asset signal
+      - Live indicator snapshot
+      - Optional company-level fundamentals for supplied tickers
+
+    Blueprint alignment: Section 2 – Risk & Portfolio Optimisation.
+    """
+    # 1. Fetch indicators + regime
+    try:
+        live_data, _meta = fetch_live_indicators()
+    except Exception:
+        live_data = {}
+    from_q = extract_indicators_from_text(req.question)
+    indicators = {**live_data, **from_q}
+    regime = detect_regime(**get_regime_inputs_from_indicators(indicators))
+    cross_asset = analyze_cross_asset(indicators)
+
+    # 2. Fetch fundamentals for portfolio tickers (if provided)
+    fundamentals_text = ""
+    fundamentals_data: dict[str, Any] = {}
+    if req.tickers:
+        try:
+            fundamentals_data = get_batch_fundamentals([t.upper() for t in req.tickers])
+            lines = [format_fundamentals_summary(v) for v in fundamentals_data.values() if "error" not in v]
+            fundamentals_text = "\n".join(lines)
+        except Exception as exc:
+            logger.warning("[/intelligence/hedge] fundamentals fetch error: %s", exc)
+
+    # 3. Build hedge prompt + call LLM
+    import requests as _req
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    num_ctx     = int(os.getenv("LLM_NUM_CTX",     "4096"))
+    num_predict = int(os.getenv("LLM_NUM_PREDICT", "800"))
+    temperature = float(os.getenv("LLM_TEMPERATURE", "0.15"))
+
+    from intelligence.model_router import get_model_candidates
+    prompt = _build_hedge_prompt(
+        req.question, regime, cross_asset, indicators,
+        fundamentals_text, req.geography, req.horizon,
+    )
+
+    response_text = ""
+    model_used = "N/A"
+    hedge_error: str | None = None
+    t_start = time.time()
+    for model in get_model_candidates():
+        try:
+            resp = _req.post(
+                f"{ollama_url}/api/generate",
+                json={
+                    "model": model, "prompt": prompt, "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_ctx": num_ctx, "num_predict": num_predict,
+                        "top_p": 0.90, "repeat_penalty": 1.15,
+                    },
+                },
+                timeout=float(os.getenv("OLLAMA_GENERATE_TIMEOUT_SEC", "90")),
+            )
+            resp.raise_for_status()
+            txt = (resp.json().get("response") or "").strip()
+            if txt:
+                response_text = txt
+                model_used = model
+                break
+        except Exception as exc:
+            hedge_error = str(exc)
+            continue
+
+    latency_ms = int((time.time() - t_start) * 1000)
+    if not response_text:
+        response_text = (
+            f"Executive summary: Unable to generate hedging suggestions at this time.\n"
+            f"Primary risks identified:\n"
+            f"- Regime: {regime.get('regime', 'UNKNOWN')} — monitor closely.\n"
+            f"- Cross-asset signal: {cross_asset.get('overall_signal', 'N/A')}\n"
+            f"Recommended hedges:\n"
+            f"- Instrument: Gold (GLD)  |  Rationale: Safe-haven in risk-off regimes  |  Suggested allocation: 5%\n"
+            f"- Instrument: US Treasuries (IEF/TLT)  |  Rationale: Rate risk buffer  |  Suggested allocation: 10%\n"
+            f"- Instrument: VIX calls  |  Rationale: Volatility spike protection  |  Suggested allocation: 2%\n"
+            f"Portfolio adjustments:\n"
+            f"- Reduce equity beta exposure when VIX > 20\n"
+            f"- Increase cash buffer in late-cycle regimes\n"
+            f"Scenario stress-test:\n"
+            f"- Bear case: Hedges cushion 30-40% of portfolio drawdown\n"
+            f"- Bull case: Cost of carry ~2-3% p.a. for standard hedge basket\n"
+            f"Confidence: LOW - LLM generation unavailable."
+        )
+
+    log_query(
+        endpoint="/intelligence/hedge",
+        question=req.question,
+        model_used=model_used,
+        latency_ms=latency_ms,
+        error=hedge_error if not response_text else None,
+    )
+
+    return {
+        "question":        req.question,
+        "regime":          regime,
+        "cross_asset":     cross_asset,
+        "portfolio_tickers": req.tickers,
+        "fundamentals":    fundamentals_data,
+        "response_text":   response_text,
+        "model_used":      model_used,
+        "latency_ms":      latency_ms,
+        "geography":       req.geography,
+        "horizon":         req.horizon,
+    }
+
+
+# ── Sector Comparison ── (Blueprint §10: Sector comparison) ───────────────────
+@app.get("/intelligence/sectors")
+def intelligence_sectors(geography: str = "US", horizon: str = "MEDIUM_TERM"):
+    """
+    Return regime-aware sector rankings (OVERWEIGHT / UNDERWEIGHT / NEUTRAL).
+
+    Automatically pulls live regime from the macro pipeline so the output is
+    always tied to the current market environment.
+
+    Blueprint reference: Section 10 — "Sector comparison"
+    """
+    from intelligence.sector_mapper import sector_impact
+    try:
+        live_data = fetch_live_indicators()
+        indicators = live_data.get("indicators", {})
+        regime_inputs = get_regime_inputs_from_indicators(indicators)
+        regime = detect_regime(regime_inputs)
+        regime_label = regime.get("regime", "UNKNOWN")
+        cross_asset = analyze_cross_asset(indicators)
+        sector_text = sector_impact(
+            macro_analysis=cross_asset.get("overall_signal", ""),
+            regime=regime_label,
+            mcx_tickers=indicators,
+        )
+        return {
+            "regime":          regime_label,
+            "regime_confidence": regime.get("confidence", "LOW"),
+            "geography":       geography,
+            "horizon":         horizon,
+            "sector_analysis": sector_text,
+            "overall_signal":  cross_asset.get("overall_signal", "NEUTRAL"),
+            "timestamp":       datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:
+        logger.warning("[/intelligence/sectors] error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Sector analysis failed: {exc}") from exc
+
+
+# ── Market Snapshot ── (Blueprint §3D: Market Data) ───────────────────────────
+@app.get("/market/snapshot")
+def market_snapshot(refresh: bool = False):
+    """
+    Return a compact real-time market snapshot for key global indices,
+    commodities, currencies, and crypto.  Cached for 15 minutes by default
+    (set MARKET_DATA_CACHE_TTL env var to change).
+
+    Blueprint reference: Section 3D — "Market Data"
+    """
+    try:
+        snapshot = get_market_snapshot()
+        text = format_snapshot_for_prompt(snapshot)
+        return {
+            "snapshot":   snapshot,
+            "prompt_text": text,
+            "timestamp":  datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as exc:
+        logger.warning("[/market/snapshot] error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Market snapshot failed: {exc}") from exc
+
+
+# ── Sentiment Analysis ── (Blueprint §10: Sentiment analysis) ─────────────────
+class SentimentRequest(BaseModel):
+    text: str
+    texts: list[str] = Field(default_factory=list)
+
+
+@app.post("/intelligence/sentiment")
+def intelligence_sentiment(req: SentimentRequest):
+    """
+    Analyse the financial sentiment of one or more text snippets.
+    Returns bullish / bearish / neutral labels with confidence scores and
+    the specific keyword signals that drove the classification.
+
+    Blueprint reference: Section 10 — "Sentiment analysis"
+    """
+    if req.texts:
+        from intelligence.sentiment_analyzer import batch_score_sentiment
+        results = batch_score_sentiment(req.texts)
+        labels = [r["label"] for r in results]
+        pos = labels.count("positive")
+        neg = labels.count("negative")
+        neu = labels.count("neutral")
+        avg_score = sum(r["score"] for r in results) / len(results)
+        return {
+            "results":       results,
+            "aggregate": {
+                "positive_count": pos,
+                "negative_count": neg,
+                "neutral_count":  neu,
+                "avg_score":      round(avg_score, 4),
+                "overall_label":  "positive" if avg_score > 0.10 else ("negative" if avg_score < -0.10 else "neutral"),
+            },
+        }
+    result = score_sentiment(req.text)
+    return result
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    from fastapi.responses import Response
+    return Response(status_code=204)
 
 
 @app.get("/", response_class=FileResponse)

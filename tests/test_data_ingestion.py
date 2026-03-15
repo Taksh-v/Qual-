@@ -1,8 +1,8 @@
 import pytest
 import json
 from datetime import datetime
-from embedding_engine import EmbeddingEngine
-from rag_pipeline import NewsRAGPipeline
+from intelligence.embedding_engine import EmbeddingEngine
+from intelligence.rag_pipeline import NewsRAGPipeline
 
 class TestDataIngestion:
     """Test that custom data is properly ingested and embedded"""

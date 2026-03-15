@@ -544,6 +544,21 @@
       animation: pulse-live 1.6s ease-in-out infinite;
     }
 
+    /* ── Source-fetch progress badges ───────────────────────────────────────
+       Shown inside .live-stamp while partial SSE events are streaming in.
+       src-done: green tick   src-loading: amber spinner   src-wait: muted dots  */
+    .src-label   { color: var(--muted); letter-spacing: 0.5px; }
+    .src-done    { color: #2ccf8a; font-weight: 700; }
+    .src-loading { color: #ffbe55; font-weight: 700; animation: blink-src 0.8s step-end infinite; }
+    .src-wait    { color: #4a6a8a; }
+    .src-cached  { color: #4a6a8a; font-style: italic; }
+    .refresh-cntd { color: #3a5a6a; font-style: italic; }
+
+    @keyframes blink-src {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.35; }
+    }
+
     @keyframes pulse-live {
       0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(44, 207, 138, 0.55); }
       50%       { opacity: 0.75; box-shadow: 0 0 0 6px rgba(44, 207, 138, 0); }
@@ -564,5 +579,46 @@
 
     .indicator.flash-up   { animation: flash-up   1.6s ease forwards; }
     .indicator.flash-down { animation: flash-down 1.6s ease forwards; }
+
+    /* ── Feedback bar ─────────────────────────────────────────────────────── */
+    .feedback-bar {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 10px; padding: 8px 12px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px; flex-wrap: wrap;
+    }
+    .feedback-label { font-size: 12px; color: var(--text-dim); margin-right: 4px; }
+    .fb-btn {
+      padding: 4px 12px; border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 4px; font-size: 12px; cursor: pointer;
+      background: rgba(255,255,255,0.06); color: var(--text);
+      transition: background 0.15s;
+    }
+    .fb-btn:hover         { background: rgba(255,255,255,0.14); }
+    .fb-btn.fb-up:hover   { border-color: #2ccf8a; color: #2ccf8a; }
+    .fb-btn.fb-down:hover { border-color: #ff6b6b; color: #ff6b6b; }
+    .feedback-status      { font-size: 11px; color: #2ccf8a; margin-left: 4px; }
+
+    /* ── Enhanced history items ───────────────────────────────────────────── */
+    .history-item {
+      padding: 7px 10px; margin-bottom: 4px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 5px; cursor: pointer; font-size: 12px;
+      transition: background 0.15s;
+    }
+    .history-item:hover { background: rgba(255,255,255,0.10); }
+    .history-meta { display: flex; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
+    .h-badge {
+      font-size: 10px; padding: 1px 5px; border-radius: 3px;
+      background: rgba(255,255,255,0.08); color: var(--text-dim);
+    }
+    .h-badge.bull { background: rgba(44,207,138,0.15); color: #2ccf8a; }
+    .h-badge.bear { background: rgba(255,107,107,0.15); color: #ff6b6b; }
+    .h-badge.warn { background: rgba(255,190,85,0.15);  color: #ffbe55; }
+    .h-badge.hi   { background: rgba(44,207,138,0.12);  color: #2ccf8a; }
+    .h-badge.med  { background: rgba(255,190,85,0.12);  color: #ffbe55; }
+    .h-badge.lo   { background: rgba(255,107,107,0.12); color: #ff6b6b; }
 
     /* flash-up/flash-down target .indicator via class — styles above handle card layout */

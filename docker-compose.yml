@@ -1,0 +1,84 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml — News Intelligence RAG stack
+#
+# Services:
+#   api       – FastAPI application (port 8000)
+#   scheduler – Background RSS ingestion + index rebuild daemon
+#   ollama    – Local LLM server (optional; comment out to use remote)
+#
+# Usage:
+#   cp .env.example .env && nano .env   # fill in API keys
+#   docker-compose up --build -d
+#   docker-compose logs -f api
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── FastAPI application ────────────────────────────────────────────────────
+  api:
+    build: .
+    container_name: qual_api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file: .env
+    environment:
+      OLLAMA_URL: http://ollama:11434
+    volumes:
+      - ./data:/app/data          # persist vector DB, logs, cache
+      - ./config:/app/config:ro   # read-only config
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health/quick"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Background ingestion scheduler ────────────────────────────────────────
+  scheduler:
+    build: .
+    container_name: qual_scheduler
+    restart: unless-stopped
+    command: ["python", "run_scheduler.py"]
+    env_file: .env
+    environment:
+      OLLAMA_URL: http://ollama:11434
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  # ── Local Ollama LLM server ────────────────────────────────────────────────
+  # Comment this block out and set OLLAMA_URL to a remote host to use a
+  # hosted model provider instead.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: qual_ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    # Pull required models on first start
+    entrypoint: >
+      sh -c "ollama serve &
+             sleep 5 &&
+             ollama pull nomic-embed-text &&
+             ollama pull mistral &&
+             wait"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  ollama_models:

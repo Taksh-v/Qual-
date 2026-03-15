@@ -54,6 +54,8 @@ MAX_ARTICLES_PER_FEED = int(os.getenv("RSS_MAX_PER_FEED", "20"))
 FETCH_FULL_TEXT = os.getenv("RSS_FETCH_FULL_TEXT", "1") == "1"
 REQUEST_TIMEOUT = float(os.getenv("RSS_REQUEST_TIMEOUT", "10"))
 MAX_WORKERS = int(os.getenv("RSS_MAX_WORKERS", "6"))
+# Drop URL-hash entries older than this from the seen-URL cache (date-based expiry)
+SEEN_URL_MAX_AGE_DAYS = int(os.getenv("RSS_SEEN_URL_MAX_AGE_DAYS", "60"))
 MIN_TEXT_LEN = 200  # chars — discard very short articles
 
 
@@ -62,25 +64,84 @@ def _url_hash(url: str) -> str:
 
 
 def _load_seen_urls() -> set[str]:
+    """
+    Load seen URL-hashes from disk.
+    Storage format: dict {hash: ISO-timestamp} (new) or list (legacy).
+    Entries older than SEEN_URL_MAX_AGE_DAYS are silently discarded on load.
+    """
     try:
         if os.path.exists(SEEN_URLS_PATH):
             with open(SEEN_URLS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return set(data) if isinstance(data, list) else set()
+
+            cutoff = datetime.now(timezone.utc).timestamp() - SEEN_URL_MAX_AGE_DAYS * 86400
+
+            if isinstance(data, list):
+                # Legacy format: plain list of hashes — migrate, treat date as 'now'
+                logger.info("[RSS] Migrating seen-URL cache to dated format (one-time).")
+                return set(data)  # keep all on migration; next save will date-stamp them
+
+            if isinstance(data, dict):
+                valid = set()
+                for h, ts_str in data.items():
+                    try:
+                        ts = datetime.fromisoformat(ts_str).timestamp()
+                        if ts >= cutoff:
+                            valid.add(h)
+                    except Exception:
+                        valid.add(h)  # keep entries with unparseable timestamps
+                return valid
     except Exception:
         pass
     return set()
 
 
 def _save_seen_urls(seen: set[str]) -> None:
+    """
+    Persist seen URL-hashes with a timestamp so old entries can be expired.
+    Format: {hash: ISO-timestamp-string}.
+    """
     try:
         os.makedirs(os.path.dirname(SEEN_URLS_PATH), exist_ok=True)
-        # Keep only last 20 000 entries to prevent unbounded growth
-        lst = list(seen)[-20_000:]
+        # Reload existing dated entries so we don't lose timestamps for old hashes
+        existing: dict[str, str] = {}
+        if os.path.exists(SEEN_URLS_PATH):
+            try:
+                with open(SEEN_URLS_PATH, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    existing = raw
+            except Exception:
+                pass
+
+        now_str = datetime.now(timezone.utc).isoformat()
+        cutoff = datetime.now(timezone.utc).timestamp() - SEEN_URL_MAX_AGE_DAYS * 86400
+
+        # Merge: add new hashes with current timestamp
+        for h in seen:
+            if h not in existing:
+                existing[h] = now_str
+
+        # Drop stale entries (date-based expiry)
+        pruned = {
+            h: ts for h, ts in existing.items()
+            if _ts_to_unix(ts) >= cutoff
+        }
+
         with open(SEEN_URLS_PATH, "w", encoding="utf-8") as f:
-            json.dump(lst, f)
+            json.dump(pruned, f)
+
+        logger.debug("[RSS] Seen-URL cache: %d active entries", len(pruned))
     except Exception as exc:
         logger.warning("Could not save seen-URL cache: %s", exc)
+
+
+def _ts_to_unix(ts_str: str) -> float:
+    """Parse an ISO timestamp string to a Unix float; returns 0 on error."""
+    try:
+        return datetime.fromisoformat(ts_str).timestamp()
+    except Exception:
+        return 0.0
 
 
 def _parse_entry_date(entry: Any) -> str:
@@ -136,11 +197,13 @@ def _fetch_full_text(url: str) -> str | None:
 
 def _extract_summary(entry: Any) -> str:
     """Pull best available summary text from a feedparser entry."""
-    for attr in ("summary", "description", "content"):
+    for attr in ("summary", "summary_detail", "description", "content"):
         val = getattr(entry, attr, None)
         if val:
             if isinstance(val, list):
                 val = val[0].get("value", "") if val else ""
+            elif isinstance(val, dict):
+                val = val.get("value", "")
             if _HAS_BS4:
                 soup = BeautifulSoup(val, "lxml")
                 val = soup.get_text(separator=" ")
@@ -192,8 +255,12 @@ def fetch_feed(
             body = _extract_summary(entry)
 
         if not body or len(body) < MIN_TEXT_LEN:
-            # Last resort: use title as minimal signal
-            body = title
+            # Skip title-only / ultra-short items; these hurt retrieval quality.
+            continue
+
+        if body.strip().lower() == title.strip().lower():
+            # Avoid indexing entries where extracted body is just the headline.
+            continue
 
         articles.append({
             "url": url,

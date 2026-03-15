@@ -4,7 +4,7 @@ run_rss_ingest.py
 End-to-end RSS ingestion pipeline:
   1. Fetch fresh articles from all configured RSS feeds
   2. Chunk each article into sentence windows
-  3. Embed chunks with Ollama nomic-embed-text
+    3. Embed chunks with the configured embedding model
   4. Upsert into the existing FAISS index + metadata JSON
 
 Usage:
@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config.rss_sources import ALL_FEEDS, PRIORITY_FEEDS
 from ingestion.rss_fetcher import fetch_all_feeds
 from ingestion.chunker import chunk_text
+from ingestion.embeddings import get_embeddings
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 RAW_DIR = os.path.join(BASE_DIR, "data", "raw", "rss")
@@ -50,11 +51,6 @@ METADATA_CANDIDATES = [
     os.path.join(BASE_DIR, "data", "vector_db", "metadata.json"),
     os.path.join(BASE_DIR, "index", "metadata.json"),
 ]
-
-OLLAMA_EMBED_URL = os.getenv("OLLAMA_EMBED_URL", "http://localhost:11434/api/embeddings")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
-EMBED_TIMEOUT = float(os.getenv("EMBED_TIMEOUT_SEC", "6"))
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -80,23 +76,6 @@ def _save_metadata(path: str, data: list[dict[str, Any]]) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def _embed(text: str) -> np.ndarray | None:
-    try:
-        import requests as req
-        resp = req.post(
-            OLLAMA_EMBED_URL,
-            json={"model": EMBED_MODEL, "prompt": text},
-            timeout=EMBED_TIMEOUT,
-        )
-        resp.raise_for_status()
-        vec = resp.json().get("embedding")
-        if vec:
-            return np.array(vec, dtype="float32")
-    except Exception as exc:
-        print(f"  [EMBED ERROR] {exc}")
-    return None
-
-
 def _load_faiss_index(path: str):
     try:
         import faiss
@@ -109,7 +88,7 @@ def _load_faiss_index(path: str):
 def _create_faiss_index(dim: int):
     try:
         import faiss
-        idx = faiss.IndexFlatL2(dim)
+        idx = faiss.IndexFlatIP(dim)
         return idx
     except Exception as exc:
         print(f"[FAISS] Could not create index: {exc}")
@@ -128,27 +107,44 @@ def build_chunks(articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Chunk all articles and return flat list of chunk dicts."""
     chunks: list[dict[str, Any]] = []
     for art in articles:
-        raw = art.get("raw_text") or art.get("title") or ""
-        if not raw:
+        raw = (art.get("raw_text") or "").strip()
+        title = (art.get("title") or "").strip()
+
+        # Keep only substantive article text; avoid title-only fallbacks.
+        if not raw or len(raw) < 200:
             continue
-        texts = chunk_text(raw, chunk_size=500, overlap=75)
-        for i, text in enumerate(texts):
+        if title and raw.lower() == title.lower():
+            continue
+
+        base_meta = {
+            "title": art.get("title", ""),
+            "source": art.get("source", ""),
+            "category": art.get("category", ""),
+            "url": art.get("url", ""),
+            "date": art.get("date", ""),
+            "published_at": art.get("date", ""),
+            "extracted_at": art.get("extracted_at", ""),
+            "company": art.get("company", "Unknown"),
+            "doc_type": "News Article",
+            "data_type": "news",
+        }
+        chunk_items = chunk_text(
+            raw,
+            chunk_size=1500,   # standardised — matches run_chunking.py
+            overlap=200,
+            with_metadata=True,
+            extra_metadata={"metadata": base_meta},
+        )
+        total = len(chunk_items)
+        for i, chunk in enumerate(chunk_items):
+            text = chunk.get("text", "")
             if not text.strip():
                 continue
-            chunks.append({
-                "text": text.strip(),
-                "metadata": {
-                    "title": art.get("title", ""),
-                    "source": art.get("source", ""),
-                    "category": art.get("category", ""),
-                    "url": art.get("url", ""),
-                    "date": art.get("date", ""),
-                    "extracted_at": art.get("extracted_at", ""),
-                    "chunk_index": i,
-                    "chunk_total": len(texts),
-                    "data_type": "rss",
-                },
-            })
+            md = chunk.get("metadata", {}) if isinstance(chunk.get("metadata"), dict) else {}
+            md["chunk_index"] = i
+            md["chunk_total"] = total
+            chunk["metadata"] = md
+            chunks.append(chunk)
     return chunks
 
 
@@ -178,28 +174,40 @@ def upsert_chunks_to_index(
     # Load existing
     metadata = _load_metadata(metadata_path)
     index = _load_faiss_index(index_path) if os.path.exists(index_path) else None
+    if index is not None:
+        try:
+            import faiss
+            if getattr(index, "metric_type", None) == faiss.METRIC_L2:
+                print("[WARN] Existing index uses L2 metric. Consider rebuilding for cosine/IP.")
+        except Exception:
+            pass
     new_vecs: list[np.ndarray] = []
 
-    for i, chunk in enumerate(chunks):
-        text = chunk["text"]
-        vec = _embed(text)
-        if vec is None:
-            stats["skipped"] += 1
-            continue
+    batch_size = 20
+    for i in range(0, len(chunks), batch_size):
+        batch = chunks[i:i+batch_size]
+        texts = [c["text"] for c in batch]
+        vecs = get_embeddings(texts, data_type="news", normalize=True, role="passage")
 
-        if index is None:
-            index = _create_faiss_index(len(vec))
-        if index is None:
-            print("[FAISS] Cannot create index — faiss not installed?")
-            break
+        for chunk, vec in zip(batch, vecs):
+            if vec is None:
+                stats["skipped"] += 1
+                continue
 
-        new_vecs.append(vec)
-        metadata.append(chunk)
-        stats["embedded"] += 1
+            if index is None:
+                index = _create_faiss_index(len(vec))
+            if index is None:
+                print("[FAISS] Cannot create index — faiss not installed?")
+                break
 
-        if (i + 1) % 50 == 0:
-            elapsed_pct = round((i + 1) / len(chunks) * 100)
-            print(f"  [{elapsed_pct}%] Embedded {i+1}/{len(chunks)} chunks...")
+            new_vecs.append(vec)
+            metadata.append(chunk)
+            stats["embedded"] += 1
+
+        pct_done = min(i + batch_size, len(chunks))
+        if pct_done % max(1, batch_size * 2) == 0 or pct_done == len(chunks):
+            elapsed_pct = round(pct_done / len(chunks) * 100)
+            print(f"  [{elapsed_pct}%] Embedded {pct_done}/{len(chunks)} chunks...")
 
     # Batch-add to index
     if new_vecs and index is not None:

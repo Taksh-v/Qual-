@@ -1,5 +1,5 @@
 import pytest
-from rag_pipeline import NewsRAGPipeline
+from intelligence.rag_pipeline import NewsRAGPipeline
 
 class TestRAGRetrieval:
     """Test that custom data is retrievable and generates correct responses"""

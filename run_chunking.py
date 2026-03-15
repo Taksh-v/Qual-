@@ -1,68 +1,112 @@
-import os
 import json
+import os
 import argparse
+import concurrent.futures
+from threading import Lock
 from ingestion.chunker import chunk_text
 
-INPUT_DIR = "data/processed/news"
-OUTPUT_DIR = "data/chunks/news"
-MIN_CHUNK_WORDS = int(os.getenv("MIN_CHUNK_WORDS", "45"))
-MAX_CHUNK_WORDS = int(os.getenv("MAX_CHUNK_WORDS", "700"))
+INPUT_DIRS = {
+    "news": "data/processed/news",
+    "sec": "data/processed/sec"
+}
+OUTPUT_DIRS = {
+    "news": "data/chunks/news",
+    "sec": "data/chunks/sec"
+}
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+for out_dir in OUTPUT_DIRS.values():
+    os.makedirs(out_dir, exist_ok=True)
 
-def run(resume: bool = False):
-    chunked_count = 0
-    skipped_existing = 0
-    for file in sorted(os.listdir(INPUT_DIR)):
-        if not file.endswith("_clean.json"):
-            continue
-        out_file = file.replace("_clean.json", "_chunks.json")
-        out_path = os.path.join(OUTPUT_DIR, out_file)
-        if resume and os.path.exists(out_path):
-            skipped_existing += 1
-            print(f"⏭️  Resume skip (already chunked): {out_file}")
-            continue
+lock = Lock()
+total_chunks_created = 0
+skipped_files = 0
 
-        with open(os.path.join(INPUT_DIR, file), "r", encoding="utf-8") as f:
-            article = json.load(f)
+def chunk_file(doc_type, file, resume):
+    global total_chunks_created, skipped_files
 
-        text = article["structured_text"]
-        chunks = chunk_text(text)
-        cleaned_chunks = []
-        seen = set()
-        for c in chunks:
-            c_norm = " ".join(c.split())
-            wc = len(c_norm.split())
-            if wc < MIN_CHUNK_WORDS or wc > MAX_CHUNK_WORDS:
-                continue
-            key = c_norm[:220].lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            cleaned_chunks.append(c_norm)
+    input_dir = INPUT_DIRS[doc_type]
+    output_dir = OUTPUT_DIRS[doc_type]
+    
+    in_path = os.path.join(input_dir, file)
+    out_file = file.replace("_clean.json", "_chunks.json")
+    out_path = os.path.join(output_dir, out_file)
 
-        chunked_data = []
-        for i, chunk in enumerate(cleaned_chunks):
-            chunked_data.append({
-                "chunk_id": f"{file}_{i}",
-                "text": chunk,
-                "metadata": article["metadata"]
-            })
+    if resume and os.path.exists(out_path):
+        with lock:
+            skipped_files += 1
+        print(f"⏭️  Resume skip (already chunked): {doc_type}/{out_file}")
+        return
 
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(chunked_data, f, indent=2)
+    with open(in_path, "r", encoding="utf-8") as f:
+        article = json.load(f)
 
-        print(f"✅ Chunked: {out_file}")
-        chunked_count += 1
+    # Convert the structured article text into chunks with context
+    raw_meta = article.get("metadata", {}) if isinstance(article.get("metadata"), dict) else {}
+    body_text = (
+        article.get("body")
+        or article.get("structured_text")
+        or article.get("content")
+        or raw_meta.get("content")
+        or ""
+    )
 
-    print(f"✅ Chunking complete | chunked={chunked_count} | resume_skipped={skipped_existing}")
+    default_doc_type = "News Article" if doc_type == "news" else "SEC Filing"
+    published_at = (
+        article.get("published_at")
+        or raw_meta.get("published_at")
+        or raw_meta.get("date")
+        or ""
+    )
+    date_val = article.get("date") or raw_meta.get("date") or published_at
+
+    metadata = {
+        "title": article.get("title") or raw_meta.get("title") or "",
+        "source": article.get("source") or raw_meta.get("source") or "",
+        "company": article.get("company") or raw_meta.get("company") or "Unknown",
+        "doc_type": article.get("doc_type") or raw_meta.get("doc_type") or default_doc_type,
+        "published_at": published_at,
+        "date": date_val or "",
+        "url": article.get("url") or raw_meta.get("url") or "",
+        "extracted_at": article.get("extracted_at") or raw_meta.get("extracted_at") or "",
+        "data_type": "news" if doc_type == "news" else "sec",
+    }
+    
+    chunks = chunk_text(body_text, chunk_size=2000, overlap=250, with_metadata=True, extra_metadata={"metadata": metadata})
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(chunks, f, indent=2)
+
+    with lock:
+        total_chunks_created += len(chunks)
+    print(f"Chunked [{doc_type}]: {out_file} -> {len(chunks)} chunks")
+
+def run_type(doc_type, resume, workers):
+    if not os.path.exists(INPUT_DIRS[doc_type]):
+        return 0, 0
+        
+    files = [f for f in sorted(os.listdir(INPUT_DIRS[doc_type])) if f.endswith("_clean.json")]
+    
+    if not files:
+        print(f"⚠️ No files to chunk in {INPUT_DIRS[doc_type]}. Skipping.")
+        return
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(chunk_file, doc_type, f, resume) for f in files]
+        concurrent.futures.wait(futures)
+
+def run(resume: bool = False, workers: int = 4):
+    global total_chunks_created, skipped_files
+    total_chunks_created = 0
+    skipped_files = 0
+
+    run_type("news", resume, workers)
+    run_type("sec", resume, workers)
+
+    print(f"✅ Chunking complete | total_new_chunks={total_chunks_created} | files_skipped={skipped_files}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Chunk structured news into retrieval chunks.")
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Skip files already chunked in data/chunks/news.",
-    )
+    parser = argparse.ArgumentParser(description="Chunk documents for embedding.")
+    parser.add_argument("--resume", action="store_true", help="Skip already chunked files.")
+    parser.add_argument("--workers", type=int, default=8, help="Number of concurrent workers.")
     args = parser.parse_args()
-    run(resume=args.resume)
+    run(resume=args.resume, workers=args.workers)

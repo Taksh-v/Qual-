@@ -1,13 +1,15 @@
 import json
-import subprocess
 import os
+import requests
 from tqdm import tqdm
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INPUT_PATH = os.path.join(BASE_DIR, "data/vector_db/metadata.json")
 OUTPUT_PATH = os.path.join(BASE_DIR, "data/vector_db/metadata_with_entities.json")
 
-MODEL = "phi3:mini"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+MODEL = os.getenv("ENTITY_EXTRACT_MODEL", "phi3:mini")
+TIMEOUT = int(os.getenv("ENTITY_EXTRACT_TIMEOUT_SEC", "60"))
 
 PROMPT_TEMPLATE = """
 You are a financial information extraction system.
@@ -36,30 +38,24 @@ TEXT:
 
 def extract_entities(text: str) -> dict:
     text = text[:600]
-
     prompt = PROMPT_TEMPLATE.format(text=text)
-
     try:
-        result = subprocess.run(
-            ["ollama", "run", MODEL],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=60
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": MODEL, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.0, "num_predict": 200}},
+            timeout=TIMEOUT,
         )
-
-        output = result.stdout.strip()
-
-        return json.loads(output)
-
+        resp.raise_for_status()
+        output = (resp.json().get("response") or "").strip()
+        # Extract first JSON object from potentially noisy output
+        start = output.find("{")
+        end   = output.rfind("}")
+        if start != -1 and end != -1:
+            return json.loads(output[start:end + 1])
     except Exception as e:
         print(f"⚠ Extraction failed: {e}")
-        return {
-            "companies": [],
-            "indices": [],
-            "sectors": [],
-            "macros": []
-        }
+    return {"companies": [], "indices": [], "sectors": [], "macros": []}
 
 
 def main():

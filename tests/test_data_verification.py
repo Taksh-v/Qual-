@@ -1,6 +1,6 @@
 import pytest
 import json
-from embedding_engine import EmbeddingEngine
+from intelligence.embedding_engine import EmbeddingEngine
 
 class TestDataVerification:
     """Verify that specific custom data points are in the system"""
@@ -45,7 +45,7 @@ class TestDataVerification:
     
     def test_data_persistence(self):
         """✅ Test 10: Verify data persists after saving"""
-        from rag_pipeline import NewsRAGPipeline
+        from intelligence.rag_pipeline import NewsRAGPipeline
         import json
         import tempfile
         import os

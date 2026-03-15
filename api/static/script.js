@@ -1,4 +1,6 @@
 console.log("script.js loaded");
+const LS_KEY = 'macro_query_history_v2';
+
 const state = {
       latest: null,
       history: [],
@@ -11,6 +13,35 @@ const state = {
         timer: null
       }
     };
+
+    // ── Persist history to localStorage ──────────────────────────────────────
+    function _saveHistory() {
+      try {
+        const slim = state.history.slice(0, 20).map(h => ({
+          question: h.question, ts: h.ts,
+          regime:   h.payload?.snapshot?.regime?.regime || '',
+          signal:   h.payload?.snapshot?.cross_asset?.overall_signal || '',
+          quality:  h.payload?.quality?.band || '',
+          score:    h.payload?.quality?.score || 0,
+          model:    h.payload?.model_used || '',
+        }));
+        localStorage.setItem(LS_KEY, JSON.stringify(slim));
+      } catch (_) {}
+    }
+
+    function _loadHistory() {
+      try {
+        const raw = localStorage.getItem(LS_KEY);
+        if (!raw) return;
+        const items = JSON.parse(raw);
+        // Merge into state; full payload not stored — only metadata
+        items.forEach(item => {
+          if (!state.history.find(h => h.ts === item.ts)) {
+            state.history.push({ ...item, payload: null });
+          }
+        });
+      } catch (_) {}
+    }
 
     // ── Critical indicator groups (left panel) ───────────────────────────────
     const indicatorGroups = [
@@ -193,15 +224,65 @@ const state = {
       setGenStatus(`Generation error: ${msg}`, 'error');
     }
 
-    async function parseError(res) {
-      let detail = '';
-      try {
-        const body = await res.json();
-        detail = body.detail || JSON.stringify(body);
-      } catch (_) {
-        detail = await res.text();
+    function stringifyErrorDetail(value) {
+      if (value === null || value === undefined) return '';
+      if (typeof value === 'string') return value;
+      if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+
+      if (Array.isArray(value)) {
+        return value
+          .map((item) => stringifyErrorDetail(item))
+          .filter((item) => item && item.trim())
+          .join(' | ');
       }
-      return detail || `${res.status} ${res.statusText}`;
+
+      if (typeof value === 'object') {
+        const msg = (typeof value.message === 'string' && value.message.trim())
+          ? value.message.trim()
+          : ((typeof value.msg === 'string' && value.msg.trim()) ? value.msg.trim() : '');
+        if (msg) {
+          const loc = Array.isArray(value.loc) ? value.loc.join('.') : '';
+          return loc ? `${loc}: ${msg}` : msg;
+        }
+        if (value.detail !== undefined) {
+          const nested = stringifyErrorDetail(value.detail);
+          if (nested) return nested;
+        }
+        try {
+          return JSON.stringify(value);
+        } catch (_) {
+          return String(value);
+        }
+      }
+
+      return String(value);
+    }
+
+    function toErrorMessage(error, fallback = 'Unknown error') {
+      if (error instanceof Error && error.message) return error.message;
+      const text = stringifyErrorDetail(error);
+      return text || fallback;
+    }
+
+    async function parseError(res) {
+      const fallback = `${res.status} ${res.statusText}`.trim();
+      let raw = '';
+      try {
+        raw = await res.text();
+      } catch (_) {
+        return fallback;
+      }
+      if (!raw) return fallback;
+
+      try {
+        const body = JSON.parse(raw);
+        const detail = (body && body.detail !== undefined)
+          ? stringifyErrorDetail(body.detail)
+          : stringifyErrorDetail(body);
+        return detail || fallback;
+      } catch (_) {
+        return raw.trim() || fallback;
+      }
     }
 
     function esc(text) {
@@ -265,9 +346,16 @@ const state = {
       const responseRaw = finalPayload.response_text || '';
       document.getElementById('responseText').innerHTML = formatSectionToHtml(responseRaw);
 
+      // Show feedback bar and clear previous status
+      const fb = document.getElementById('feedbackBar');
+      if (fb) fb.style.display = 'flex';
+      const fbs = document.getElementById('feedbackStatus');
+      if (fbs) fbs.textContent = '';
+
       state.latest = finalPayload;
       state.history.unshift({ question, payload: finalPayload, ts: new Date().toISOString() });
-      if (state.history.length > 12) state.history.pop();
+      if (state.history.length > 20) state.history.pop();
+      _saveHistory();
       renderHistory();
     }
 
@@ -286,14 +374,46 @@ const state = {
     }
 
     function renderHistory() {
-      const history = document.getElementById('history');
-      history.innerHTML = state.history.map((h, idx) => `<div class="history-item" data-idx="${idx}">${h.question}<br><small>${h.ts}</small></div>`).join('');
-      [...history.querySelectorAll('.history-item')].forEach((el) => {
+      const histEl = document.getElementById('history');
+      if (!histEl) return;
+      if (!state.history.length) {
+        histEl.innerHTML = '<div style="color:var(--text-dim);font-size:11px;">No history yet.</div>';
+        return;
+      }
+      histEl.innerHTML = state.history.map((h, idx) => {
+        const regClass = (() => {
+          const r = (h.regime || h.payload?.snapshot?.regime?.regime || '').toUpperCase();
+          if (r.includes('GOLDILOCKS') || r.includes('RECOVERY') || r.includes('REFLATION')) return 'bull';
+          if (r.includes('STAGFLATION') || r.includes('RECESSION') || r.includes('DEFLATION')) return 'bear';
+          return 'warn';
+        })();
+        const qBand = (h.quality || h.payload?.quality?.band || '').toUpperCase();
+        const qClass = qBand === 'HIGH' ? 'hi' : (qBand === 'MEDIUM' ? 'med' : (qBand === 'LOW' ? 'lo' : ''));
+        const regime   = h.regime  || h.payload?.snapshot?.regime?.regime || '';
+        const score    = h.score   ?? h.payload?.quality?.score ?? '';
+        const model    = h.model   || h.payload?.model_used || '';
+        const tsShort  = h.ts ? new Date(h.ts).toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit' }) : '';
+        return `<div class="history-item" data-idx="${idx}" title="Click to re-run">
+          <div>${esc(h.question)}</div>
+          <div class="history-meta">
+            ${regime ? `<span class="h-badge ${regClass}">${esc(regime)}</span>` : ''}
+            ${qBand  ? `<span class="h-badge ${qClass}">${qBand}${score ? ' ' + score : ''}</span>` : ''}
+            ${model  ? `<span class="h-badge">${esc(model.slice(0,22))}</span>` : ''}
+            ${tsShort ? `<span class="h-badge">${tsShort}</span>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+      [...histEl.querySelectorAll('.history-item')].forEach((el) => {
         el.addEventListener('click', () => {
           const item = state.history[parseInt(el.dataset.idx, 10)];
           if (!item) return;
           document.getElementById('question').value = item.question;
-          renderFinal(item.payload, item.question);
+          if (item.payload) {
+            renderFinal(item.payload, item.question);
+          } else {
+            // Full payload not stored — re-run the query
+            runMain().catch(() => {});
+          }
         });
       });
     }
@@ -308,17 +428,7 @@ const state = {
       resetCards();
       startGeneration('Building regime snapshot...');
 
-      const snapRes = await fetch('/intelligence/snapshot', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-      });
-      if (!snapRes.ok) {
-        throw new Error(`Snapshot failed: ${await parseError(snapRes)}`);
-      }
-      const snap = await snapRes.json();
-      updateSnapshot(snap);
-      setGenStatus('Snapshot ready. Streaming analysis...', 'running');
-
-      const streamRes = await fetch('/intelligence/stream', {
+    const streamRes = await fetch('/intelligence/stream', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
       });
 
@@ -347,7 +457,12 @@ const state = {
             if (line.startsWith('data:')) data += line.slice(5).trim();
           }
           if (!evt || !data) continue;
-          const parsed = JSON.parse(data);
+          let parsed;
+          try {
+            parsed = JSON.parse(data);
+          } catch (_) {
+            parsed = { message: data };
+          }
 
           if (evt === 'snapshot') updateSnapshot(parsed);
           if (evt === 'section_start') {
@@ -365,8 +480,9 @@ const state = {
             finishGeneration();
           }
           if (evt === 'error') {
-            document.getElementById('responseText').textContent += '\n[ERROR] ' + parsed.message;
-            failGeneration(parsed.message);
+            const msg = toErrorMessage((parsed && parsed.message !== undefined) ? parsed.message : parsed, 'Unknown stream error');
+            document.getElementById('responseText').textContent += '\n[ERROR] ' + msg;
+            failGeneration(msg);
           }
         }
       }
@@ -400,8 +516,105 @@ const state = {
       document.getElementById('compareB').textContent = buildComparePane(b, q2);
     }
 
-    async function exportNote() {
-      const payload = basePayload();
+    // ── Feedback ──────────────────────────────────────────────────────────────
+    async function submitFeedback(rating) {
+      const question = document.getElementById('question').value.trim();
+      const answerEl = document.getElementById('responseText');
+      const answerSnippet = (answerEl ? answerEl.textContent : '').slice(0, 300);
+      const statusEl = document.getElementById('feedbackStatus');
+      if (!question) { if (statusEl) statusEl.textContent = 'No question to attach feedback to.'; return; }
+      try {
+        const res = await fetch('/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question, answer_snippet: answerSnippet, rating, comment: '' }),
+        });
+        if (statusEl) statusEl.textContent = res.ok ? '✓ Thanks for your feedback!' : '✗ Could not save feedback.';
+        setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 4000);
+      } catch (e) {
+        if (statusEl) statusEl.textContent = '✗ ' + toErrorMessage(e);
+      }
+    }
+
+    // ── Company Fundamentals lookup ───────────────────────────────────────────
+    async function lookupFundamentals() {
+      const tickerEl = document.getElementById('fundamentalsTicker');
+      const resultEl = document.getElementById('fundamentalsResult');
+      const ticker = (tickerEl ? tickerEl.value.trim().toUpperCase() : '');
+      if (!ticker) { if (resultEl) resultEl.textContent = 'Please enter a ticker symbol.'; return; }
+      if (resultEl) resultEl.textContent = `Fetching fundamentals for ${ticker}…`;
+      try {
+        const res = await fetch(`/fundamentals/${encodeURIComponent(ticker)}`);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          const msg = stringifyErrorDetail(err?.detail !== undefined ? err.detail : err) || res.statusText;
+          resultEl.textContent = `Error: ${msg}`;
+          return;
+        }
+        const d = await res.json();
+        const lines = [
+          `${d.ticker} — ${d.name}`,
+          `Sector: ${d.sector || 'N/A'}  |  Industry: ${d.industry || 'N/A'}`,
+          `Market Cap: ${_fmtLarge(d.market_cap)}  |  P/E: ${d.pe_ratio ?? 'N/A'}  |  Fwd P/E: ${d.forward_pe ?? 'N/A'}`,
+          `EPS(TTM): ${d.eps_ttm != null ? '$' + d.eps_ttm.toFixed(2) : 'N/A'}  |  Revenue: ${_fmtLarge(d.revenue_ttm)}`,
+          `Profit Margin: ${d.profit_margins != null ? (d.profit_margins * 100).toFixed(1) + '%' : 'N/A'}  |  FCF: ${_fmtLarge(d.free_cashflow)}`,
+          `Debt/Equity: ${d.debt_to_equity ?? 'N/A'}  |  Beta: ${d.beta ?? 'N/A'}`,
+          `52W: $${d['52w_low'] ?? 'N/A'} – $${d['52w_high'] ?? 'N/A'}  |  Current: $${d.current_price ?? 'N/A'}`,
+          `Analyst: ${d.analyst_recommendation || 'N/A'} (${d.analyst_count ?? '?'})  |  Target: ${d.analyst_target != null ? '$' + d.analyst_target.toFixed(2) : 'N/A'}`,
+          `Fetched: ${d.fetched_at || ''}`,
+        ];
+        resultEl.textContent = lines.join('\n');
+      } catch (e) {
+        resultEl.textContent = 'Error: ' + toErrorMessage(e);
+      }
+    }
+
+    function _fmtLarge(v) {
+      if (v == null) return 'N/A';
+      v = Number(v);
+      if (Math.abs(v) >= 1e12) return '$' + (v / 1e12).toFixed(2) + 'T';
+      if (Math.abs(v) >= 1e9)  return '$' + (v / 1e9).toFixed(2) + 'B';
+      if (Math.abs(v) >= 1e6)  return '$' + (v / 1e6).toFixed(1) + 'M';
+      return '$' + v.toFixed(2);
+    }
+
+    // ── Hedge Analysis ────────────────────────────────────────────────────────
+    async function runHedge() {
+      const question = document.getElementById('question').value.trim();
+      const tickersRaw = (document.getElementById('hedgeTickers')?.value || '').trim();
+      const resultEl = document.getElementById('hedgeResult');
+      if (!question) { if (resultEl) resultEl.textContent = 'Enter a question in the Command panel first.'; return; }
+      if (resultEl) resultEl.textContent = 'Running hedge analysis…';
+      const tickers = tickersRaw ? tickersRaw.split(/[,\s]+/).map(t => t.toUpperCase()).filter(Boolean) : [];
+      const geography = document.getElementById('geography')?.value || 'US';
+      const horizon   = document.getElementById('horizon')?.value   || 'MEDIUM_TERM';
+      try {
+        const res = await fetch('/intelligence/hedge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question, tickers, geography, horizon }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          const msg = stringifyErrorDetail(err?.detail !== undefined ? err.detail : err) || res.statusText;
+          resultEl.textContent = `Error: ${msg}`;
+          return;
+        }
+        const d = await res.json();
+        const lines = [
+          `Regime: ${d.regime?.regime || 'N/A'} (${d.regime?.confidence || ''})`,
+          `Cross-Asset: ${d.cross_asset?.overall_signal || 'N/A'}`,
+          `Model: ${d.model_used || 'N/A'}  |  ${d.latency_ms}ms`,
+          '',
+          d.response_text || 'No response generated.',
+        ];
+        resultEl.textContent = lines.join('\n');
+      } catch (e) {
+        resultEl.textContent = 'Error: ' + toErrorMessage(e);
+      }
+    }
+
+    async function exportNote() {      const payload = basePayload();
       if (!payload.question) return;
       const res = await fetch('/intelligence/export', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
@@ -419,21 +632,23 @@ const state = {
     document.getElementById('runBtn').addEventListener('click', () => {
       console.log("runBtn clicked");
       runMain().catch((e) => {
-        document.getElementById('responseText').textContent += `\n[ERROR] ${e.message}`;
-        failGeneration(e.message);
+        const msg = toErrorMessage(e);
+        document.getElementById('responseText').textContent += `\n[ERROR] ${msg}`;
+        failGeneration(msg);
       });
     });
     document.getElementById('compareBtn').addEventListener('click', () => {
       console.log("compareBtn clicked");
       runCompare().catch((e) => {
-        document.getElementById('compareA').textContent = '[ERROR] ' + e.message;
-        document.getElementById('compareB').textContent = '[ERROR] ' + e.message;
+        const msg = toErrorMessage(e);
+        document.getElementById('compareA').textContent = '[ERROR] ' + msg;
+        document.getElementById('compareB').textContent = '[ERROR] ' + msg;
       });
     });
     document.getElementById('exportBtn').addEventListener('click', () => {
       console.log("exportBtn clicked");
       exportNote().catch((e) => {
-        document.getElementById('responseText').textContent += `\n[ERROR] ${e.message}`;
+        document.getElementById('responseText').textContent += `\n[ERROR] ${toErrorMessage(e)}`;
       });
     });
 
@@ -441,8 +656,9 @@ const state = {
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         runMain().catch((e) => {
-          document.getElementById('responseText').textContent += `\n[ERROR] ${e.message}`;
-          failGeneration(e.message);
+          const msg = toErrorMessage(e);
+          document.getElementById('responseText').textContent += `\n[ERROR] ${msg}`;
+          failGeneration(msg);
         });
       }
     });
@@ -501,6 +717,14 @@ const state = {
     setInterval(_tickClock, 1000);
     _tickClock();
 
+    // ── Bootstrap: connect SSE directly — partial events populate screen progressively ─
+    let _liveES = null;
+    let _nextRefreshTimer = null;
+    let _nextRefreshEnd   = 0;
+    _loadHistory();
+    renderHistory();
+    connectLiveStream();
+
     // ── Live market data (SSE stream) ────────────────────────────────────────
     // ── Ticker shows macro/rates/FX data (steady updates, not tick-by-tick markets) ────
     const tickerOrder = [
@@ -539,46 +763,100 @@ const state = {
 
     function handleLiveUpdate(data) {
       const inds = data.indicators || {};
+      const isPartial     = data.partial === true;
+      const source        = data.source || '';
+      const completed     = data.completed_sources || [];
+      const pending       = data.pending_sources   || [];
+      const fromCache     = data.from_cache === true;
+
+      // Build synthetic snapshot from whatever indicators we have so far
       const syntheticSnapshot = {
         critical_indicators: Object.entries(inds).map(([key, v]) => ({
           key,
-          label: v.label,
-          value: v.value,
-          unit: v.unit,
+          label:     v.label,
+          value:     v.value,
+          unit:      v.unit,
           direction: v.direction || 'flat',
-          as_of: v.as_of || '',
-          change: v.change,
+          as_of:     v.as_of || '',
+          change:    v.change,
         }))
       };
       renderIndicatorControls(syntheticSnapshot);
-      // Flash indicators whose value changed
+
+      // Flash changed indicators
       Object.entries(inds).forEach(([key, v]) => {
         if (v.direction && v.direction !== 'flat') {
-          const indicator = document.querySelector(`.indicator[data-key="${key}"]`);
-          if (indicator) {
-            indicator.classList.remove('flash-up', 'flash-down');
-            void indicator.offsetWidth; // force reflow to restart animation
-            indicator.classList.add(`flash-${v.direction}`);
+          const el = document.querySelector(`.indicator[data-key="${key}"]`);
+          if (el) {
+            el.classList.remove('flash-up', 'flash-down');
+            void el.offsetWidth;
+            el.classList.add(`flash-${v.direction}`);
           }
         }
       });
+
+      // Update ticker bar with whatever is available
       updateTickerBar(inds);
+
+      // Update the stamp to show source-by-source progress
       const stamp = document.getElementById('marketDataStamp');
       if (stamp) {
-        const ts = data.timestamp ? _localDateTime(new Date(data.timestamp)) : _localDateTime(new Date());
-        stamp.innerHTML = `<span class="live-dot"></span>&nbsp;LIVE&nbsp;&middot;&nbsp;Updated: ${ts}`;
+        const ALL_SOURCES = ['yfinance', 'FRED', 'WorldBank'];
+        if (fromCache) {
+          const ts = data.timestamp ? _localDateTime(new Date(data.timestamp)) : _localDateTime(new Date());
+          stamp.innerHTML = `<span class="live-dot"></span>&nbsp;LIVE&nbsp;&middot;&nbsp;${ts}&nbsp;&middot;&nbsp;<span class="src-cached">cached</span>`;
+        } else if (isPartial) {
+          const parts = ALL_SOURCES.map(s => {
+            if (completed.includes(s)) return `<span class="src-done">${s}&thinsp;&#10003;</span>`;
+            if (s === source)          return `<span class="src-loading">${s}&thinsp;&#8987;</span>`;
+            return                             `<span class="src-wait">${s}&thinsp;&middot;&middot;&middot;</span>`;
+          });
+          stamp.innerHTML = `<span class="live-dot"></span>&nbsp;<span class="src-label">Fetching:</span>&nbsp;` + parts.join('&ensp;');
+        } else {
+          const ts = data.timestamp ? _localDateTime(new Date(data.timestamp)) : _localDateTime(new Date());
+          stamp.innerHTML = `<span class="live-dot"></span>&nbsp;LIVE&nbsp;&middot;&nbsp;${ts}`;
+        }
       }
     }
 
-    let _liveES = null;
+    function _startRefreshCountdown(sleepS) {
+      _nextRefreshEnd = Date.now() + sleepS * 1000;
+      if (_nextRefreshTimer) clearInterval(_nextRefreshTimer);
+      _nextRefreshTimer = setInterval(() => {
+        const remaining = Math.max(0, Math.round((_nextRefreshEnd - Date.now()) / 1000));
+        const stamp = document.getElementById('marketDataStamp');
+        // Only update countdown if not actively fetching (stamp has live-dot and no src-loading)
+        if (stamp && !stamp.querySelector('.src-loading')) {
+          const liveText = stamp.innerHTML;
+          // Inject or update countdown badge at end
+          const hasCntd = stamp.querySelector('.refresh-cntd');
+          if (hasCntd) {
+            hasCntd.textContent = `refresh in ${remaining}s`;
+          } else if (remaining > 5) {
+            stamp.innerHTML += `&ensp;<span class="refresh-cntd">refresh in ${remaining}s</span>`;
+          }
+        }
+        if (remaining <= 0 && _nextRefreshTimer) {
+          clearInterval(_nextRefreshTimer);
+          _nextRefreshTimer = null;
+        }
+      }, 1000);
+    }
+
     function connectLiveStream() {
       if (_liveES) { _liveES.close(); _liveES = null; }
       const stamp = document.getElementById('marketDataStamp');
-      if (stamp) stamp.innerHTML = `<span class="live-dot"></span>&nbsp;LIVE&nbsp;&middot;&nbsp;Connecting...`;
+      if (stamp) stamp.innerHTML = `<span class="live-dot"></span>&nbsp;Connecting...`;
       const es = new EventSource('/market_data/stream');
       _liveES = es;
       es.addEventListener('update', (e) => {
         try { handleLiveUpdate(JSON.parse(e.data)); } catch (err) { console.warn('Live parse error:', err); }
+      });
+      es.addEventListener('tick', (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (d.next_refresh_s) _startRefreshCountdown(d.next_refresh_s);
+        } catch (_) {}
       });
       es.addEventListener('error', () => {
         console.warn('Live stream interrupted — reconnecting in 10 s');
@@ -586,33 +864,3 @@ const state = {
         setTimeout(connectLiveStream, 10000);
       });
     }
-
-    // Bootstrap: fast initial fetch then open persistent SSE stream
-    async function refreshMarketData() {
-      try {
-        const res = await fetch('/market_data');
-        if (!res.ok) return;
-        const data = await res.json();
-        const inds = data.indicators || {};
-        const syntheticSnapshot = {
-          critical_indicators: Object.entries(inds).map(([key, v]) => ({
-            key, label: v.label, value: v.value, unit: v.unit,
-            direction: 'flat', as_of: v.as_of || '',
-          }))
-        };
-        renderIndicatorControls(syntheticSnapshot);
-        updateTickerBar(inds);
-        const stamp = document.getElementById('marketDataStamp');
-        if (stamp) stamp.innerHTML = `<span class="live-dot"></span>&nbsp;LIVE&nbsp;&middot;&nbsp;Loading stream...`;
-      } catch (_) {}
-    }
-
-    refreshMarketData().then(() => connectLiveStream());
-
-    fetch('/intelligence/snapshot', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: 'Initial dashboard status check', geography: 'US', horizon: 'MEDIUM_TERM', indicator_overrides: {} })
-    }).then((r) => r.json()).then((snap) => {
-      updateSnapshot(snap);
-    });

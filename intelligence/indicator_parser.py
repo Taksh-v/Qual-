@@ -36,27 +36,113 @@ from typing import Optional
 
 # Regex patterns: each maps a keyword pattern to a standard indicator key and capture group for value
 EXTRACTION_PATTERNS = [
-    ("gdp_growth",      r"(?:gdp|real gdp)[^\d]*?([\-]?\d+\.?\d*)\s*%"),
-    ("inflation_cpi",   r"(?:cpi|consumer price)[^\d]*?([\-]?\d+\.?\d*)\s*%"),
-    ("inflation_core",  r"(?:core cpi|core inflation)[^\d]*?([\-]?\d+\.?\d*)\s*%"),
-    ("pce",             r"(?:pce)[^\d]*?([\-]?\d+\.?\d*)\s*%"),
-    ("fed_funds_rate",  r"(?:fed funds|federal funds|policy rate)[^\d]*?([\d\.]+)\s*%"),
-    ("yield_30y",       r"(?:30.?year|30y)[^\d]*?([\d\.]+)\s*%"),
-    ("yield_10y",       r"(?:10.?year|10y)[^\d]*?([\d\.]+)\s*%"),
-    ("yield_2y",        r"(?:2.?year|2y)[^\d]*?([\d\.]+)\s*%"),
-    ("credit_hy",       r"(?:hy spread|high yield spread)[^\d]*?([\d]+)\s*bps?"),
-    ("credit_ig",       r"(?:ig spread|investment grade spread)[^\d]*?([\d]+)\s*bps?"),
-    ("vix",             r"(?:vix)[^\d]*?([\d\.]+)"),
-    ("dxy",             r"(?:dxy|dollar index)[^\d]*?([\d\.]+)"),
-    ("oil_brent",       r"(?:brent)[^\d]*?\$?([\d\.]+)"),
-    ("oil_wti",         r"(?:wti|crude oil|oil price)[^\d]*?\$?([\d\.]+)"),
-    ("gold",            r"(?:gold)[^\d]*?\$?([\d]+(?:\.\d+)?)"),
-    ("sp500",           r"(?:s&p\s*500|s&p500|spx)[^\d]*?([\d,]+(?:\.\d+)?)"),
-    ("nasdaq",          r"(?:nasdaq|ndx|qqq)[^\d]*?([\d,]+(?:\.\d+)?)"),
-    ("unemployment",    r"(?:unemployment|jobless rate)[^\d]*?([\d\.]+)\s*%"),
-    ("pmi_mfg",         r"(?:manufacturing pmi|mfg pmi|ism mfg)[^\d]*?([\d\.]+)"),
-    ("pmi_services",    r"(?:services pmi|service pmi|ism services)[^\d]*?([\d\.]+)"),
+    ("gdp_growth",      r"(?:\bgdp\b|\breal gdp\b)[^\d\n]{0,24}([\-]?\d+\.?\d*)\s*%"),
+    ("inflation_cpi",   r"(?:\bcpi\b|\bconsumer price(?: index)?\b)[^\d\n]{0,24}([\-]?\d+\.?\d*)\s*%"),
+    ("inflation_core",  r"(?:\bcore cpi\b|\bcore inflation\b)[^\d\n]{0,24}([\-]?\d+\.?\d*)\s*%"),
+    ("pce",             r"\bpce\b[^\d\n]{0,24}([\-]?\d+\.?\d*)\s*%"),
+    ("fed_funds_rate",  r"(?:\bfed funds\b|\bfederal funds\b|\bpolicy rate\b)[^\d\n]{0,24}([\d\.]+)\s*%"),
+    ("yield_30y",       r"(?:\b30.?year\b|\b30y\b)[^\d\n]{0,24}([\d\.]+)\s*%"),
+    ("yield_10y",       r"(?:\b10.?year\b|\b10y\b)[^\d\n]{0,24}([\d\.]+)\s*%"),
+    ("yield_2y",        r"(?:\b2.?year\b|\b2y\b)[^\d\n]{0,24}([\d\.]+)\s*%"),
+    ("credit_hy",       r"(?:\bhy spread\b|\bhigh yield spread\b)[^\d\n]{0,24}([\d]+)\s*bps?"),
+    ("credit_ig",       r"(?:\big spread\b|\binvestment grade spread\b)[^\d\n]{0,24}([\d]+)\s*bps?"),
+    ("vix",             r"\bvix\b[^\d\n]{0,24}([\d\.]+)"),
+    ("dxy",             r"(?:\bdxy\b|\bdollar index\b)[^\d\n]{0,24}([\d\.]+)"),
+    ("oil_brent",       r"\bbrent\b[^\d\n]{0,20}\$?([\d\.]+)"),
+    ("oil_wti",         r"(?:\bwti\b|\bcrude oil\b|\boil price\b)[^\d\n]{0,20}\$?([\d\.]+)"),
+    ("gold",            r"(?:\bgold\b|\bxau\b)[^\d\n]{0,20}\$?([\d]+(?:\.\d+)?)"),
+    ("sp500",           r"(?:\bs&p\s*500\b|\bs&p500\b|\bspx\b)[^\d\n]{0,24}([\d,]+(?:\.\d+)?)"),
+    ("nasdaq",          r"(?:\bnasdaq\b|\bndx\b|\bqqq\b)[^\d\n]{0,24}([\d,]+(?:\.\d+)?)"),
+    ("unemployment",    r"(?:\bunemployment\b|\bjobless rate\b)[^\d\n]{0,24}([\d\.]+)\s*%"),
+    ("pmi_mfg",         r"(?:\bmanufacturing pmi\b|\bmfg pmi\b|\bism mfg\b)[^\d\n]{0,24}([\d\.]+)"),
+    ("pmi_services",    r"(?:\bservices pmi\b|\bservice pmi\b|\bism services\b)[^\d\n]{0,24}([\d\.]+)"),
 ]
+
+
+_BPS_KEYS = {
+    "credit_hy",
+    "credit_ig",
+    "credit_bb",
+    "credit_spread",
+    "credit_spread_gap",
+}
+
+
+_RANGE_BOUNDS = {
+    "gdp_growth": (-15.0, 20.0),
+    "inflation_cpi": (-5.0, 20.0),
+    "inflation_core": (-5.0, 20.0),
+    "inflation_core_cpi": (-5.0, 20.0),
+    "pce": (-5.0, 20.0),
+    "pce_deflator": (-5.0, 20.0),
+    "pce_core": (-5.0, 20.0),
+    "fed_funds_rate": (-1.0, 20.0),
+    "yield_30y": (-1.0, 20.0),
+    "yield_10y": (-1.0, 20.0),
+    "yield_2y": (-1.0, 20.0),
+    "yield_1y": (-1.0, 20.0),
+    "yield_3m": (-1.0, 20.0),
+    "yield_curve": (-500.0, 500.0),
+    "yield_curve_10y3m": (-500.0, 500.0),
+    "yield_curve_30y2y": (-500.0, 500.0),
+    "term_premium_proxy": (-500.0, 500.0),
+    "credit_hy": (50.0, 2500.0),
+    "credit_ig": (5.0, 1000.0),
+    "credit_bb": (10.0, 2000.0),
+    "credit_spread": (5.0, 2500.0),
+    "credit_spread_gap": (-300.0, 2000.0),
+    "vix": (5.0, 120.0),
+    "dxy": (70.0, 140.0),
+    "oil_brent": (5.0, 250.0),
+    "oil_wti": (5.0, 250.0),
+    "gold": (200.0, 5000.0),
+    "sp500": (500.0, 15000.0),
+    "nasdaq": (1000.0, 30000.0),
+    "unemployment": (1.0, 30.0),
+    "pmi_mfg": (20.0, 80.0),
+    "pmi_services": (20.0, 80.0),
+}
+
+
+def _to_float(value: object) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def sanitize_indicator_values(indicators: dict, *, drop_out_of_range: bool = True) -> dict:
+    cleaned: dict = {}
+    for key, value in (indicators or {}).items():
+        numeric = _to_float(value)
+        if numeric is None:
+            if value is not None:
+                cleaned[key] = value
+            continue
+
+        adjusted = numeric
+        if key in _BPS_KEYS and 0 < abs(adjusted) < 25:
+            adjusted *= 100.0
+
+        bounds = _RANGE_BOUNDS.get(key)
+        if bounds and drop_out_of_range:
+            low, high = bounds
+            if adjusted < low or adjusted > high:
+                continue
+
+        cleaned[key] = round(adjusted, 4)
+
+    if "yield_10y" in cleaned and "yield_2y" in cleaned and "yield_curve" not in cleaned:
+        cleaned["yield_curve"] = round((cleaned["yield_10y"] - cleaned["yield_2y"]) * 100, 1)
+
+    if "credit_hy" in cleaned and "credit_spread" not in cleaned:
+        cleaned["credit_spread"] = cleaned["credit_hy"]
+    elif "credit_ig" in cleaned and "credit_spread" not in cleaned:
+        cleaned["credit_spread"] = cleaned["credit_ig"]
+
+    return cleaned
 
 
 def extract_indicators_from_text(text: str) -> dict:
@@ -77,19 +163,7 @@ def extract_indicators_from_text(text: str) -> dict:
             except ValueError:
                 pass
 
-    # Derived indicators
-    if "yield_10y" in indicators and "yield_2y" in indicators:
-        indicators["yield_curve"] = round(
-            (indicators["yield_10y"] - indicators["yield_2y"]) * 100, 1
-        )  # in bps
-
-    # Best available credit spread
-    if "credit_hy" in indicators and "credit_spread" not in indicators:
-        indicators["credit_spread"] = indicators["credit_hy"]
-    elif "credit_ig" in indicators and "credit_spread" not in indicators:
-        indicators["credit_spread"] = indicators["credit_ig"]
-
-    return indicators
+    return sanitize_indicator_values(indicators)
 
 
 def merge_indicators(*sources: dict) -> dict:

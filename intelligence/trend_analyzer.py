@@ -1,6 +1,6 @@
 import os
 import json
-import subprocess
+import requests
 from collections import Counter
 from tqdm import tqdm
 
@@ -8,7 +8,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 METADATA_PATH = os.path.join(BASE_DIR, "data", "vector_db", "metadata.json")
 OUTPUT_PATH = os.path.join(BASE_DIR, "data", "intelligence_trends.json")
 
-LLM_MODEL = "phi3:mini"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+LLM_MODEL = os.getenv("TREND_ANALYZE_MODEL", "phi3:mini")
+TIMEOUT = int(os.getenv("TREND_ANALYZE_TIMEOUT_SEC", "90"))
 
 
 PROMPT_TEMPLATE = """
@@ -36,26 +38,19 @@ News:
 
 def call_llm(prompt: str) -> dict | None:
     try:
-        result = subprocess.run(
-            ["ollama", "run", LLM_MODEL],
-            input=prompt,
-            text=True,
-            capture_output=True,
-            timeout=90
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": LLM_MODEL, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.0, "num_predict": 200}},
+            timeout=TIMEOUT,
         )
-
-        if result.returncode != 0:
-            return None
-
-        # Extract first JSON block safely
-        output = result.stdout.strip()
+        resp.raise_for_status()
+        output = (resp.json().get("response") or "").strip()
         start = output.find("{")
-        end = output.rfind("}")
+        end   = output.rfind("}")
         if start == -1 or end == -1:
             return None
-
         return json.loads(output[start:end + 1])
-
     except Exception:
         return None
 

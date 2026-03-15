@@ -97,6 +97,14 @@
           <summary>Best Response</summary>
           <div id="responseText" class="content"></div>
         </details>
+        <!-- Feedback bar (shown after a response is generated) -->
+        <div id="feedbackBar" class="feedback-bar" style="display:none;">
+          <span class="feedback-label">Was this response useful?</span>
+          <button class="fb-btn fb-up"   onclick="submitFeedback(5)" title="Helpful">&#128077; Yes</button>
+          <button class="fb-btn fb-mid"  onclick="submitFeedback(3)" title="Partially helpful">&#128528; Partly</button>
+          <button class="fb-btn fb-down" onclick="submitFeedback(1)" title="Not helpful">&#128078; No</button>
+          <span id="feedbackStatus" class="feedback-status"></span>
+        </div>
       </div>
 
       <div id="compareWrap" class="compare">
@@ -114,6 +122,20 @@
 
       <h2 class="title" style="margin-top:12px;">Question History</h2>
       <div id="history"></div>
+
+      <h2 class="title" style="margin-top:12px;">Company Fundamentals</h2>
+      <div class="row" style="gap:6px;margin-bottom:6px;">
+        <input id="fundamentalsTicker" placeholder="e.g. AAPL" style="flex:1;min-width:80px;" maxlength="10" />
+        <button class="btn-secondary" onclick="lookupFundamentals()">Look up</button>
+      </div>
+      <div id="fundamentalsResult" style="font-family:var(--font-mono);font-size:11px;line-height:1.5;white-space:pre-wrap;"></div>
+
+      <h2 class="title" style="margin-top:12px;">Hedge Analysis</h2>
+      <div class="row" style="gap:6px;margin-bottom:4px;">
+        <input id="hedgeTickers" placeholder="Tickers (e.g. AAPL,MSFT)" style="flex:1;" />
+      </div>
+      <button class="btn-secondary" style="width:100%;margin-bottom:4px;" onclick="runHedge()">Analyse Hedging</button>
+      <div id="hedgeResult" style="font-family:var(--font-mono);font-size:11px;line-height:1.5;white-space:pre-wrap;max-height:260px;overflow-y:auto;"></div>
     </section>
   </div>
 

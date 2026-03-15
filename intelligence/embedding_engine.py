@@ -10,13 +10,19 @@ class EmbeddingEngine:
     Similar to market_engine but focused on news embeddings
     """
     
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str | None = None):
         """
         Initialize the embedding model
         
         Args:
             model_name: Sentence transformer model to use
         """
+        if model_name is None:
+            model_name = (
+                os.getenv("EMBED_MODEL_FINANCE")
+                or os.getenv("EMBED_MODEL")
+                or "all-MiniLM-L6-v2"
+            )
         self.model = SentenceTransformer(model_name)
         self.embeddings_cache = {}
     
@@ -30,19 +36,20 @@ class EmbeddingEngine:
         Returns:
             List of dicts with added 'embedding' field
         """
+        if not news_items:
+            return []
+
+        texts = [
+            f"{item.get('title', '')} {item.get('content', '')}".strip()
+            for item in news_items
+        ]
+        embeddings = self.model.encode(texts, normalize_embeddings=True)
+
         embedded_items = []
-        
-        for item in news_items:
-            # Combine title and content for embedding
-            text_to_embed = f"{item.get('title', '')} {item.get('content', '')}"
-            
-            # Generate embedding
-            embedding = self.model.encode(text_to_embed)
-            
-            # Add embedding to item
-            item['embedding'] = embedding.tolist()
+        for item, embedding in zip(news_items, embeddings):
+            item["embedding"] = np.asarray(embedding, dtype="float32").tolist()
             embedded_items.append(item)
-        
+
         return embedded_items
     
     def similarity_search(self, query: str, news_embeddings: List[Dict], top_k: int = 5) -> List[Dict]:
@@ -57,12 +64,12 @@ class EmbeddingEngine:
         Returns:
             Top K most relevant news items
         """
-        query_embedding = self.model.encode(query)
+        query_embedding = self.model.encode(query, normalize_embeddings=True)
         
         # Calculate similarities
         similarities = []
         for item in news_embeddings:
-            score = np.dot(query_embedding, np.array(item['embedding']))
+            score = float(np.dot(query_embedding, np.array(item["embedding"], dtype="float32")))
             similarities.append((item, score))
         
         # Sort by similarity and return top_k

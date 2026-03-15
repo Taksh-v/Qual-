@@ -2,7 +2,10 @@ import json
 import os
 import faiss
 import numpy as np
-import subprocess
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from ingestion.embeddings import get_embedding
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -10,19 +13,11 @@ METADATA_PATH = os.path.join(BASE_DIR, "data", "vector_db", "metadata.json")
 INDEX_DIR = os.path.join(BASE_DIR, "index")
 INDEX_PATH = os.path.join(INDEX_DIR, "faiss.index")
 
-EMBED_MODEL = "nomic-embed-text"
-
 os.makedirs(INDEX_DIR, exist_ok=True)
 
 
 def embed_text(text: str) -> np.ndarray:
-    result = subprocess.run(
-        ["ollama", "run", EMBED_MODEL],
-        input=text,
-        text=True,
-        capture_output=True
-    )
-    return np.array(json.loads(result.stdout), dtype="float32")
+    return np.array(get_embedding(text, normalize=True, role="passage"), dtype="float32")
 
 
 def main():
@@ -37,7 +32,7 @@ def main():
     embeddings = np.vstack(embeddings)
 
     dim = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dim)
+    index = faiss.IndexFlatIP(dim)
     index.add(embeddings)
 
     faiss.write_index(index, INDEX_PATH)

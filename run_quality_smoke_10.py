@@ -97,9 +97,9 @@ def run(limit: int = 10, from_existing_raw: bool = False) -> int:
     skipped = 0
     for rec in chunk_records:
         try:
-            emb = get_embedding(rec["text"])
+            emb = get_embedding(rec["text"], role="passage")
             if index is None:
-                index = faiss.IndexFlatL2(len(emb))
+                index = faiss.IndexFlatIP(len(emb))
             index.add(np.expand_dims(emb, axis=0))
             metadata_store.append(rec)
         except Exception as exc:
