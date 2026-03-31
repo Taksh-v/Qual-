@@ -37,7 +37,7 @@ EXPOSE 8000
 
 # Healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -sf http://localhost:8000/health/quick || exit 1
+    CMD curl -sf http://localhost:8000/health || exit 1
 
 # Default: run the API server
 CMD ["uvicorn", "api.app:app", \

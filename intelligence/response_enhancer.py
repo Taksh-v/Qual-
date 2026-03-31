@@ -28,29 +28,39 @@ from typing import Any
 
 # ── Required sections by mode ──────────────────────────────────────────────────
 _REQUIRED_SECTIONS_BRIEF = [
+    "Regime:",
     "Direct answer:",
     "Data snapshot:",
-    "Causal chain:",
+    "Causal architecture:",
     "What is happening:",
-    "Market impact:",
+    "Cross-asset impact:",
+    "Positioning:",
     "Predicted events:",
     "Scenarios",
+    "Key levels:",
+    "Historical analog:",
     "What to watch:",
+    "Data gaps:",
     "Confidence:",
 ]
 
 _REQUIRED_SECTIONS_DETAILED = [
+    "Regime:",
     "Executive summary:",
     "Direct answer:",
     "Data snapshot:",
-    "Causal chain:",
+    "Causal architecture:",
     "What is happening:",
-    "Market impact:",
+    "Cross-asset impact:",
+    "Positioning:",
     "Predicted events:",
     "Scenarios",
+    "Key levels:",
     "Key risks:",
+    "Historical analog:",
     "Time horizons:",
     "What to watch:",
+    "Data gaps:",
     "Confidence:",
 ]
 
@@ -82,6 +92,9 @@ _PROB_RE = re.compile(r"\(~?(\d+)%\)", re.IGNORECASE)
 # Source citation pattern
 _CITATION_RE = re.compile(r"\[S\d+\]", re.IGNORECASE)
 _HORIZON_RE = re.compile(r"\b(\d+\s*-\s*\d+\s*(d|days|w|weeks|m|months)|24-72h|1-4\s*weeks|30-90\s*d)\b", re.IGNORECASE)
+
+
+from intelligence.response_schema import StructuredResponse, ResponseMetadata
 
 
 @dataclass
@@ -267,7 +280,11 @@ def _add_missing_section_stubs(text: str, missing: list[str]) -> str:
     """Append minimal stubs for completely missing sections."""
     stubs: dict[str, str] = {
         "Data snapshot:": "Data snapshot: Refer to live indicator section above.",
-        "Predicted events:": "Predicted events:\n- Event 1 (7-30d, ~55%): Baseline continuation of current regime dynamics.\n- Event 2 (7-30d, ~45%): Opposite move if next major macro release surprises.",
+        "Causal architecture:": "Causal architecture:\nPrimary: Market dynamics → TBD",
+        "Cross-asset impact:": "Cross-asset impact:\n- Equities: ● Neutral — TBD",
+        "Positioning:": "Positioning:\n- Neutral: Broad indices — TBD",
+        "Predicted events:": "Predicted events:\n- Event 1 (7-30d, ~55%): Baseline continuation of current regime dynamics; trigger: confirmation; invalidation: opposite.",
+        "Key levels:": "Key levels:\n- S&P 500: TBD — critical support/resistance",
         "What to watch:": "What to watch:\n- Next scheduled central bank meeting or CPI release.",
         "Confidence:": "Confidence: LOW - Limited context available.",
     }
@@ -397,3 +414,19 @@ def score_response(text: str, mode: str = "brief") -> dict[str, Any]:
         "citations_count": report.citations_count,
         "warnings": report.warnings,
     }
+
+
+def enhance_structured_response(resp: StructuredResponse) -> tuple[StructuredResponse, EnhancementReport]:
+    """
+    Apply enhancement logic to a StructuredResponse object and update its metadata.
+    """
+    text = resp.to_text()
+    mode = resp.metadata.mode
+    enhanced_text, report = enhance_response(text, mode)
+    
+    # Update metadata in the object
+    resp.metadata.quality_score = report.quality_score
+    resp.metadata.warnings = report.warnings
+    resp.metadata.citation_count = report.citations_count
+    
+    return resp, report

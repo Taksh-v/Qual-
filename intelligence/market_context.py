@@ -49,6 +49,7 @@ def _sign(ind: dict[str, Any], key: str) -> str:
 
 
 def _flag(condition: bool, true_tag: str = "▲", false_tag: str = "▼") -> str:
+    """Standardized upward/downward indicators."""
     return true_tag if condition else false_tag
 
 

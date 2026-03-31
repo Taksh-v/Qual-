@@ -3,6 +3,7 @@ import logging
 import logging.config
 import os
 import re
+import asyncio
 import time
 from datetime import datetime, timezone
 from threading import Lock
@@ -18,7 +19,7 @@ from fastapi import FastAPI, HTTPException, Request, Security, Depends
 from fastapi.responses import PlainTextResponse, StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 try:
@@ -50,6 +51,7 @@ from intelligence.question_classifier import classify_question
 from intelligence.regime_detector import detect_regime
 from intelligence.news_health_checker import check_news_health, check_news_health_quick
 from intelligence.response_enhancer import score_response
+from intelligence.response_middleware import normalize_api_payload
 from intelligence.query_logger import log_query, read_recent, compute_metrics
 from intelligence.shared_embed_cache import cache_info as embed_cache_info
 from intelligence.sentiment_analyzer import score_sentiment, sentiment_summary
@@ -115,6 +117,25 @@ async def _auth_middleware(request: Request, call_next):
     """Enforce X-API-Key on all non-public endpoints when API_KEYS is set."""
     if not _VALID_API_KEYS:
         return await call_next(request)  # Dev mode: no keys configured
+
+    # Local development convenience:
+    # If the request originates from localhost, allow access without an API key.
+    # This prevents 403s during local testing when callers don't attach X-API-Key.
+    #
+    # (You can disable this behavior by setting BYPASS_API_KEY_FOR_LOCALHOST=0)
+    bypass_local = os.getenv("BYPASS_API_KEY_FOR_LOCALHOST", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    if bypass_local:
+        client_host = (request.client.host if request.client else "") or ""
+        xff = request.headers.get("X-Forwarded-For", "")
+        xff_host = (xff.split(",")[0].strip() if xff else "")
+        if client_host in {"127.0.0.1", "::1"} or xff_host in {"127.0.0.1", "::1"}:
+            return await call_next(request)
+
     path = request.url.path
     if path == "/" or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
         return await call_next(request)
@@ -166,6 +187,9 @@ class QueryResponse(BaseModel):
     question: str
     answer: str
     sources: list
+    response_contract: dict[str, Any] | None = Field(default=None, alias="_response_contract")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class IntelligenceRequest(BaseModel):
@@ -189,7 +213,7 @@ class HedgeRequest(BaseModel):
         horizon:   NEAR_TERM | MEDIUM_TERM | LONG_TERM
     """
     question:   str
-    tickers:    list[str] = Field(default_factory=list, max_items=10)
+    tickers:    list[str] = Field(default_factory=list, max_length=10)
     geography:  str = "US"
     horizon:    str = "MEDIUM_TERM"
 
@@ -198,7 +222,7 @@ class HedgeRequest(BaseModel):
 # INDICATOR_META is now maintained in config/indicators.py and imported above.
 
 
-@app.post("/ask", response_model=QueryResponse)
+@app.post("/ask")
 @_rl(_RL_LLM)
 async def ask_question(req: QueryRequest, request: Request):
     question_key = req.question.strip().lower()
@@ -219,6 +243,8 @@ async def ask_question(req: QueryRequest, request: Request):
                 ),
                 "sources": [],
             }
+
+        result = normalize_api_payload(result, mode="brief")
 
         latency_ms = int((time.time() - t_start) * 1000)
         # Source count acts as a proxy for chunk_count on /ask
@@ -275,10 +301,13 @@ def _normalized_overrides(overrides: dict[str, Any]) -> dict[str, float]:
     return normalized
 
 
-def _collect_indicator_inputs(req: IntelligenceRequest) -> tuple[dict[str, float], list[dict[str, Any]]]:
+def _collect_indicator_inputs(
+    req: IntelligenceRequest,
+) -> tuple[dict[str, float], list[dict[str, Any]], dict[str, Any]]:
     overrides = _normalized_overrides(req.indicator_overrides)
     context_chunks: list[dict[str, Any]] = []
     context_text = ""
+    live_meta: dict[str, Any] = {}
     try:
         # Reduced from top_k=25/keep_latest=15 → 12/8 to cut retrieval + prompt size.
         context_chunks = retrieve_relevant_context(req.question, top_k=12, keep_latest=8)
@@ -289,7 +318,7 @@ def _collect_indicator_inputs(req: IntelligenceRequest) -> tuple[dict[str, float
 
     # Fetch live FRED data first (authoritative baseline)
     try:
-        live_data, _meta = fetch_live_indicators()
+        live_data, live_meta = fetch_live_indicators()
     except Exception:
         live_data = {}
 
@@ -297,12 +326,12 @@ def _collect_indicator_inputs(req: IntelligenceRequest) -> tuple[dict[str, float
     from_question = extract_indicators_from_text(req.question)
     # Priority: overrides > extracted from text/question > live FRED
     all_indicators = sanitize_indicator_values({**live_data, **from_context, **from_question, **overrides})
-    return all_indicators, context_chunks
+    return all_indicators, context_chunks, live_meta
 
 
 def _build_snapshot(req: IntelligenceRequest) -> dict[str, Any]:
     classification = classify_question(req.question)
-    all_indicators, context_chunks = _collect_indicator_inputs(req)
+    all_indicators, context_chunks, live_meta = _collect_indicator_inputs(req)
     overrides = _normalized_overrides(req.indicator_overrides)
 
     regime_inputs = get_regime_inputs_from_indicators(all_indicators)
@@ -351,6 +380,7 @@ def _build_snapshot(req: IntelligenceRequest) -> dict[str, Any]:
         "cross_asset": cross_asset,
         "critical_indicators": critical,
         "detected_indicators": {k: all_indicators[k] for k in sorted(all_indicators.keys())},
+        "live_data_meta": live_meta,
         "evidence_coverage": {
             "context_chunks": len(context_chunks),
             "has_overrides": bool(overrides),
@@ -482,15 +512,36 @@ def _estimate_quality(snapshot: dict[str, Any], response_text: str) -> dict[str,
     }
 
 
-def _make_structured_payload(snapshot: dict[str, Any], response_text: str, model_used: str) -> dict[str, Any]:
+def _make_structured_payload(
+    snapshot: dict[str, Any],
+    response_text: str,
+    model_used: str,
+    response_mode: str = "brief",
+) -> dict[str, Any]:
     quality = _estimate_quality(snapshot, response_text)
     response_struct = _parse_unified_response(response_text)
+    contract_probe = normalize_api_payload({"answer": response_text}, mode=response_mode)
+
+    def _add_point(points: list[dict[str, str]], title: str, text: str) -> None:
+        t = (text or "").strip()
+        if t:
+            points.append({"title": title, "text": t})
+
+    key_points: list[dict[str, str]] = []
+    _add_point(key_points, "Executive summary", response_struct.get("executive_summary", ""))
+    _add_point(key_points, "Direct answer", response_struct.get("direct_answer", ""))
+    _add_point(key_points, "Market impact", response_struct.get("market_impact", ""))
+    _add_point(key_points, "Main risks", response_struct.get("main_risks", ""))
+    _add_point(key_points, "What to watch next", response_struct.get("watch_next", ""))
+    _add_point(key_points, "Action plan", response_struct.get("action_plan", ""))
     return {
         "snapshot": snapshot,
         "response_text": response_text,
         "response_struct": response_struct,
+        "key_points": key_points,
         "quality": quality,
         "model_used": model_used or "N/A",
+        "_response_contract": contract_probe.get("_response_contract", {}),
     }
 
 
@@ -537,7 +588,12 @@ async def intelligence_analyze(req: IntelligenceRequest, request: Request):
         error_msg: str | None = None
         try:
             snapshot, response_text, model_used = _run_analysis(req)
-            payload = _make_structured_payload(snapshot, response_text, model_used)
+            payload = _make_structured_payload(
+                snapshot,
+                response_text,
+                model_used,
+                response_mode=req.response_mode,
+            )
         except HTTPException as exc:
             error_msg = str(exc.detail)
             raise
@@ -586,7 +642,12 @@ async def intelligence_analyze(req: IntelligenceRequest, request: Request):
 @app.post("/intelligence/export", response_class=PlainTextResponse)
 def intelligence_export(req: IntelligenceRequest):
     snapshot, response_text, model_used = _run_analysis(req)
-    s = _make_structured_payload(snapshot, response_text, model_used)
+    s = _make_structured_payload(
+        snapshot,
+        response_text,
+        model_used,
+        response_mode=req.response_mode,
+    )
 
     regime = s["snapshot"]["regime"]
     quality = s.get("quality", {})
@@ -609,6 +670,7 @@ def intelligence_export(req: IntelligenceRequest):
 @_rl(_RL_LLM)
 async def intelligence_stream(req: IntelligenceRequest, request: Request):
     def event_stream():
+        PROGRESS_PREFIX = "<<PROGRESS>>"
         try:
             snapshot = _build_snapshot(req)
         except Exception as exc:
@@ -627,16 +689,33 @@ async def intelligence_stream(req: IntelligenceRequest, request: Request):
                 horizon=req.horizon,
                 response_mode=req.response_mode,
             ):
+                if isinstance(chunk, str) and chunk.startswith(PROGRESS_PREFIX):
+                    # Pipeline progress is emitted as its own SSE event so the UI
+                    # can show stages without polluting the response text.
+                    try:
+                        progress_payload = json.loads(chunk[len(PROGRESS_PREFIX) :])
+                    except Exception:
+                        progress_payload = {"stage": "unknown", "raw": chunk}
+                    yield _sse("progress", progress_payload)
+                    continue
                 if "▸ RESPONSE" in chunk:
                     yield _sse("section_start", {"section": "response"})
                     continue
-                if chunk.startswith("━━━") or chunk.strip().startswith("Regime:") or chunk.startswith("━"):
+                if chunk.startswith("━━━") or chunk.startswith("━"):
                     continue
 
                 response_text += chunk
                 yield _sse("token", {"section": "response", "text": chunk})
 
-            yield _sse("final", _make_structured_payload(snapshot, response_text.strip(), get_last_model_used()))
+            yield _sse(
+                "final",
+                _make_structured_payload(
+                    snapshot,
+                    response_text.strip(),
+                    get_last_model_used(),
+                    response_mode=req.response_mode,
+                ),
+            )
         except Exception as exc:
             logger.exception("/intelligence/stream generation failed")
             yield _sse("error", {"message": str(exc), "type": exc.__class__.__name__})
@@ -665,7 +744,7 @@ def market_data_live():
 
 
 @app.get("/market_data/stream")
-def market_data_live_stream():
+def market_data_live_stream(request: Request):
     """Server-Sent Events stream — progressive partial updates.
     Emits an ``event: update`` for EACH data source as it completes
     (yfinance first, then FRED, then WorldBank) so indicators appear
@@ -674,6 +753,9 @@ def market_data_live_stream():
     After a full cycle, sleeps until the next scheduled refresh.
     """
     prev: dict[str, float] = {}
+
+    sleep_open_s = int(os.getenv("MARKET_DATA_STREAM_SLEEP_OPEN_SEC", "60"))
+    sleep_closed_s = int(os.getenv("MARKET_DATA_STREAM_SLEEP_CLOSED_SEC", "120"))
 
     def _format_live(live: dict, meta: dict) -> dict:
         """Build the indicator payload dict from a (possibly partial) live dict."""
@@ -698,13 +780,13 @@ def market_data_live_stream():
             prev[key] = val
         return formatted
 
-    def event_gen():
+    async def event_gen():
         nonlocal prev
         while True:
             try:
                 for live, meta in stream_live_indicators():
                     formatted = _format_live(live, meta)
-                    sleep_s   = 60 if any_price_market_open() else 300
+                    sleep_s   = sleep_open_s if any_price_market_open() else sleep_closed_s
                     payload   = {
                         "indicators":        formatted,
                         "timestamp":         datetime.utcnow().isoformat() + "Z",
@@ -720,9 +802,9 @@ def market_data_live_stream():
                     yield f"event: update\ndata: {json.dumps(payload)}\n\n"
             except Exception as exc:
                 yield f"event: error\ndata: {json.dumps({'message': str(exc)})}\n\n"
-            sleep_s = 60 if any_price_market_open() else 300
+            sleep_s = sleep_open_s if any_price_market_open() else sleep_closed_s
             yield f"event: tick\ndata: {json.dumps({'next_refresh_s': sleep_s, 'timestamp': datetime.utcnow().isoformat() + 'Z'})}\n\n"
-            time.sleep(sleep_s)
+            await asyncio.sleep(sleep_s)
 
     return StreamingResponse(
         event_gen(),
@@ -1275,6 +1357,156 @@ def intelligence_sentiment(req: SentimentRequest):
 async def favicon():
     from fastapi.responses import Response
     return Response(status_code=204)
+
+
+# ── Agentic RAG Endpoints ─────────────────────────────────────────────────────
+
+
+class AgenticRequest(BaseModel):
+    """Request body for the Agentic RAG endpoints."""
+    question: str
+    geography: str = "US"
+    horizon: str = "MEDIUM_TERM"
+    response_mode: str = "detailed"
+    max_iterations: int = Field(default=2, ge=1, le=4)
+    bloomberg_format: str = "morning_note"  # morning_note | risk_matrix | trade_idea | brief
+
+
+@app.post("/intelligence/agentic_analyze")
+@_rl(_RL_LLM)
+async def agentic_analyze(req: AgenticRequest, request: Request):
+    """
+    Bloomberg-grade Agentic RAG endpoint with full Plan→Act→Observe→Reflect loop.
+
+    Streams Server-Sent Events at each pipeline stage:
+      event: planning      — Sub-question decomposition
+      event: retrieval     — Context chunks + live market data fetched
+      event: agent_brief   — Each specialist agent's analysis
+      event: reflection    — Gaps identified + follow-up queries
+      event: final         — Complete structured output + audit trace
+
+    Response mode 'detailed' produces a Bloomberg Morning Note.
+    Response mode 'brief' produces a compact summary.
+    """
+    from intelligence.agentic_rag import AgenticOrchestrator
+
+    orchestrator = AgenticOrchestrator(max_iterations=req.max_iterations)
+
+    async def event_stream():
+        t_start = time.time()
+        try:
+            async for event in orchestrator.run_async(
+                question=req.question,
+                geography=req.geography,
+                horizon=req.horizon,
+                response_mode=req.response_mode,
+            ):
+                yield event.to_sse()
+        except Exception as exc:
+            logger.exception("/intelligence/agentic_analyze failed")
+            import json as _json
+            yield f"event: error\ndata: {_json.dumps({'message': str(exc), 'type': exc.__class__.__name__})}\n\n"
+        finally:
+            latency_ms = int((time.time() - t_start) * 1000)
+            log_query(
+                endpoint="/intelligence/agentic_analyze",
+                question=req.question,
+                latency_ms=latency_ms,
+                cache_hit=False,
+            )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/intelligence/trace")
+async def intelligence_trace(req: AgenticRequest):
+    """
+    Run a full agentic analysis and return the complete audit trace (non-streaming).
+
+    Useful for debugging, observability, and compliance audit.
+    Returns agent outputs, tool calls, gaps found, and timing per stage.
+    """
+    from intelligence.agentic_rag import AgenticOrchestrator, AgentState
+
+    orchestrator = AgenticOrchestrator(max_iterations=req.max_iterations)
+    trace_data: dict[str, Any] = {}
+    final_answer: str = ""
+
+    try:
+        async for event in orchestrator.run_async(
+            question=req.question,
+            geography=req.geography,
+            horizon=req.horizon,
+            response_mode=req.response_mode,
+        ):
+            if event.stage == "final":
+                trace_data = event.data.get("trace", {})
+                final_answer = event.data.get("answer", "")
+    except Exception as exc:
+        logger.exception("/intelligence/trace failed")
+        raise HTTPException(status_code=500, detail=f"Agentic trace failed: {exc}") from exc
+
+    return {
+        "question": req.question,
+        "answer_preview": final_answer[:500],
+        "trace": trace_data,
+    }
+
+
+@app.post("/intelligence/bloomberg")
+@_rl(_RL_LLM)
+async def intelligence_bloomberg(req: AgenticRequest, request: Request):
+    """
+    Run the existing analysis pipeline and return Bloomberg-formatted output.
+
+    Wraps /intelligence/analyze with the BloombergFormatter.
+    Formats: morning_note (default), risk_matrix, trade_idea, brief.
+    """
+    from intelligence.bloomberg_formatter import BloombergFormatter
+
+    # Re-use existing analyze pipeline
+    try:
+        snapshot, response_text, model_used = _run_analysis(
+            IntelligenceRequest(
+                question=req.question,
+                geography=req.geography,
+                horizon=req.horizon,
+                response_mode=req.response_mode,
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    formatter = BloombergFormatter()
+    live_indicators: dict[str, Any] = {}
+    try:
+        from intelligence.live_market_data import fetch_live_indicators
+        live_indicators_raw, _ = fetch_live_indicators()
+        live_indicators = {k: v for k, v in live_indicators_raw.items() if v is not None}
+    except Exception:
+        pass
+
+    formatted = formatter.format(
+        mode=req.bloomberg_format or "morning_note",
+        answer=response_text,
+        indicators=live_indicators,
+        regime=snapshot.get("regime", {}),
+        cross_asset=snapshot.get("cross_asset", {}),
+        question=req.question,
+        geography=req.geography,
+        horizon=req.horizon,
+        model_used=model_used,
+    )
+
+    return {
+        "question": req.question,
+        "bloomberg_format": req.bloomberg_format,
+        "formatted_output": formatted,
+        "model_used": model_used,
+        "quality": _estimate_quality(snapshot, response_text),
+    }
 
 
 @app.get("/", response_class=FileResponse)

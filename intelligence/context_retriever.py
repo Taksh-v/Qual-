@@ -623,8 +623,9 @@ def _title_score(tokens: set[str], item: dict) -> float:
     return float(sum(2.5 for t in tokens if t in title_tokens))
 
 
-def _relevance_score(question: str, item: dict, filters: dict[str, Any]) -> float:
+def _relevance_score(question: str, item: dict, filters: dict[str, Any] | None = None) -> float:
     """Combined relevance score: text hits + entity hits + title hits + recency."""
+    filters = filters or {}
     tokens = _extract_query_tokens(question)
 
     text = (item.get("text") or "").lower()

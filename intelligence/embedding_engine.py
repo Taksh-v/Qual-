@@ -2,7 +2,7 @@ import os
 import json
 from typing import List, Dict
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from ingestion.embeddings import get_embedding, get_embeddings
 
 class EmbeddingEngine:
     """
@@ -23,7 +23,7 @@ class EmbeddingEngine:
                 or os.getenv("EMBED_MODEL")
                 or "all-MiniLM-L6-v2"
             )
-        self.model = SentenceTransformer(model_name)
+        self.model_name = model_name
         self.embeddings_cache = {}
     
     def embed_news_batch(self, news_items: List[Dict]) -> List[Dict]:
@@ -43,11 +43,16 @@ class EmbeddingEngine:
             f"{item.get('title', '')} {item.get('content', '')}".strip()
             for item in news_items
         ]
-        embeddings = self.model.encode(texts, normalize_embeddings=True)
+        
+        # Use centralized embeddings utility which supports Ollama
+        embeddings = get_embeddings(texts, data_type="news", normalize=True)
 
         embedded_items = []
         for item, embedding in zip(news_items, embeddings):
-            item["embedding"] = np.asarray(embedding, dtype="float32").tolist()
+            if embedding is not None:
+                item["embedding"] = np.asarray(embedding, dtype="float32").tolist()
+            else:
+                item["embedding"] = None
             embedded_items.append(item)
 
         return embedded_items
@@ -64,11 +69,14 @@ class EmbeddingEngine:
         Returns:
             Top K most relevant news items
         """
-        query_embedding = self.model.encode(query, normalize_embeddings=True)
+        # Use centralized embeddings utility which supports Ollama
+        query_embedding = get_embedding(query, normalize=True, role="query")
         
         # Calculate similarities
         similarities = []
         for item in news_embeddings:
+            if item.get("embedding") is None:
+                continue
             score = float(np.dot(query_embedding, np.array(item["embedding"], dtype="float32")))
             similarities.append((item, score))
         

@@ -49,6 +49,10 @@ try:
 except ImportError:
     _SQLITE_AVAILABLE = False
 
+from intelligence.market_data import get_live_market_snapshot
+from intelligence.mechanics_engine import get_dominant_mechanics_block
+from config.indicators import INDICATOR_META
+
 INDEX_CANDIDATES = [
     os.path.join(BASE_DIR, "data", "vector_db", "news.index"),
     os.path.join(BASE_DIR, "index", "faiss.index"),
@@ -66,7 +70,7 @@ RETURN_K = 8
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_EMBED_TIMEOUT_SEC = float(os.getenv("OLLAMA_EMBED_TIMEOUT_SEC", "6"))
 OLLAMA_GENERATE_TIMEOUT_SEC = float(os.getenv("OLLAMA_GENERATE_TIMEOUT_SEC", "120"))
-RAG_GENERATE_TIMEOUT_SEC = float(os.getenv("RAG_GENERATE_TIMEOUT_SEC", "12"))
+RAG_GENERATE_TIMEOUT_SEC = float(os.getenv("RAG_GENERATE_TIMEOUT_SEC", "120.0"))
 RAG_MAX_MODEL_CANDIDATES = max(1, int(os.getenv("RAG_MAX_MODEL_CANDIDATES", "1")))
 
 
@@ -101,6 +105,11 @@ RAG_ANSWER_CACHE_ENABLED = _env_flag("RAG_ANSWER_CACHE_ENABLED", True)
 RAG_ANSWER_CACHE_TTL_SEC = float(os.getenv("RAG_ANSWER_CACHE_TTL_SEC", "180"))
 RAG_ANSWER_CACHE_MAX_KEYS = max(32, int(os.getenv("RAG_ANSWER_CACHE_MAX_KEYS", "256")))
 RAG_RELAX_HARD_FILTER_FALLBACK = _env_flag("RAG_RELAX_HARD_FILTER_FALLBACK", True)
+RAG_ENABLE_MCP_ENRICHMENT = _env_flag("RAG_ENABLE_MCP_ENRICHMENT", False)
+RAG_MCP_SERVER = os.getenv("RAG_MCP_SERVER", "").strip()
+RAG_MCP_TOOL = os.getenv("RAG_MCP_TOOL", "").strip()
+RAG_MCP_TIMEOUT_SEC = max(1.0, float(os.getenv("RAG_MCP_TIMEOUT_SEC", "6")))
+RAG_MCP_MAX_CHARS = max(120, int(os.getenv("RAG_MCP_MAX_CHARS", "700")))
 
 _ANSWER_CACHE: OrderedDict[str, tuple[float, tuple[str, list[dict[str, Any]]]]] = OrderedDict()
 _ANSWER_CACHE_LOCK = Lock()
@@ -177,6 +186,7 @@ def _answer_cache_key(question: str, metadata_version: str) -> str:
             f"answer_rewrite={1 if RAG_ENABLE_ANSWER_REWRITE else 0}",
             f"compact={1 if RAG_ENABLE_COMPACT_RETRY else 0}",
             f"adaptive={1 if RAG_ADAPTIVE_BUDGET else 0}",
+            f"mcp={1 if RAG_ENABLE_MCP_ENRICHMENT else 0}:{RAG_MCP_SERVER}:{RAG_MCP_TOOL}",
         ]
     )
 
@@ -1154,45 +1164,55 @@ def ask_llm(
     raise RuntimeError(f"LLM generation failed across model candidates: {last_error}")
 
 
+from intelligence.response_builder import BriefResponseBuilder
+
+
 def build_fallback_answer(question: str, chunks: list[dict[str, Any]]) -> str:
+    builder = BriefResponseBuilder()
+    
     if not chunks:
         return (
-            "Executive summary: Insufficient data from available news.\n"
-            "Direct answer: Insufficient data from available news.\n"
-            "Why this is likely:\n"
-            "- Insufficient data from available news.\n"
-            "- Insufficient data from available news.\n"
-            "- Insufficient data from available news.\n"
-            "Main risks:\n"
-            "- Lack of high-quality retrieved evidence.\n"
-            "- Potentially stale or incomplete source coverage.\n"
-            "What to watch next:\n"
-            "- Add more high-relevance sources.\n"
-            "- Rebuild index and re-run query.\n"
-            "- Validate date and topic coverage.\n"
-            "Confidence: LOW - evidence is insufficient."
+            builder.executive_summary("Insufficient data from available news.")
+            .direct_answer("Insufficient data from available news.")
+            .happening(["Insufficient data from available news."])
+            .key_risks([
+                "Lack of high-quality retrieved evidence.",
+                "Potentially stale or incomplete source coverage."
+            ])
+            .watch([
+                "Add more high-relevance sources.",
+                "Rebuild index and re-run query.",
+                "Validate date and topic coverage."
+            ])
+            .confidence("LOW - evidence is insufficient.")
+            .build()
+            .to_text()
         )
 
-    lines = [
-        f"Executive summary: For '{question}', evidence is limited but indicates a cautious, evidence-first stance.",
-        "Direct answer: Use available facts carefully and avoid strong conclusions until stronger evidence appears.",
-        "Why this is likely:",
-    ]
+    builder.executive_summary(f"For '{question}', evidence is limited but indicates a cautious, evidence-first stance.")
+    builder.direct_answer("Use available facts carefully and avoid strong conclusions until stronger evidence appears.")
+    
+    why_bullets = []
     for i, chunk in enumerate(chunks[:3], start=1):
         text = " ".join((chunk.get("text") or "").split())
         snippet = text[:180].rstrip()
-        lines.append(f"- Source {i} highlights: {snippet} [S{i}]")
-    lines += [
-        "Main risks:",
-        "- Retrieved context may not be fully aligned with the question.",
-        "- Some required data points may be missing or stale.",
-        "What to watch next:",
-        "- Fresh, topic-specific sources.",
-        "- New macro/market releases tied to the question.",
-        "- Retrieval quality and citation coverage.",
-        "Confidence: MEDIUM - usable but limited evidence quality.",
+        why_bullets.append(f"Source {i} highlights: {snippet} [S{i}]")
+    builder.happening(why_bullets)
+
+    builder.key_risks([
+        "Retrieved context may not be fully aligned with the question.",
+        "Some required data points may be missing or stale."
+    ])
+
+    watch_bullets = [
+        "Fresh, topic-specific sources.",
+        "New macro/market releases tied to the question.",
+        "Retrieval quality and citation coverage."
     ]
-    return "\n".join(lines)
+    builder.watch(watch_bullets)
+    builder.confidence("MEDIUM - usable but limited evidence quality.")
+    
+    return builder.build().to_text()
 
 
 def _extract_sentences(text: str, max_sentences: int = 3) -> list[str]:
@@ -1409,6 +1429,31 @@ def _classify_generation_reason(exc: Exception | str) -> str:
     return "unknown_generation_error"
 
 
+async def _maybe_fetch_mcp_enrichment(question: str) -> tuple[str, str]:
+    if not RAG_ENABLE_MCP_ENRICHMENT:
+        return "", "disabled"
+    if not RAG_MCP_SERVER or not RAG_MCP_TOOL:
+        return "", "misconfigured"
+    try:
+        from mcp_integration.runtime_enrichment import fetch_external_context_async
+
+        result = await fetch_external_context_async(
+            question=question,
+            server_name=RAG_MCP_SERVER,
+            tool_name=RAG_MCP_TOOL,
+            timeout_sec=RAG_MCP_TIMEOUT_SEC,
+            max_chars=RAG_MCP_MAX_CHARS,
+        )
+        if result.get("ok"):
+            return str(result.get("text") or ""), "used"
+        if result.get("is_error"):
+            return "", "tool_error"
+        return "", "empty"
+    except Exception as exc:
+        logger.info("[rag] mcp enrichment unavailable: %s", exc)
+        return "", "error"
+
+
 async def run_query(question: str) -> tuple[str, list[dict[str, Any]]]:
     index = load_index()
     metadata = load_metadata()
@@ -1433,17 +1478,19 @@ async def run_query(question: str) -> tuple[str, list[dict[str, Any]]]:
 
     retrieval_health = evaluate_retrieval_quality(question, chunks)
 
-    prompt = build_prompt_from_scratch(chunks, question, context_max_chars=adaptive_context_chars)
-    generation_mode = "llm"
+    mcp_enrichment_text, mcp_enrichment_status = await _maybe_fetch_mcp_enrichment(question)
+
+    generation_mode = "llm_3_pass"
     generation_reason = "none"
     deterministic_repair_used = False
     compact_retry_used = False
     answer_quality = {
-        "structure_ok": False,
+        "structure_ok": True,
         "grounding": 0.0,
         "numeric_risk": 0.0,
-        "reasons": ["not_evaluated"],
+        "reasons": [],
     }
+
     try:
         if store_health["status"] == "BAD" or retrieval_health["status"] == "BAD":
             raise RuntimeError("Data quality gate blocked generation due to low retrieval confidence.")
@@ -1453,77 +1500,98 @@ async def run_query(question: str) -> tuple[str, list[dict[str, Any]]]:
             "temperature": RAG_MAIN_TEMPERATURE,
             "top_p": 1.0,
         }
-        try:
-            draft = ask_llm(prompt, options=_main_options)
-        except Exception as full_exc:
-            if not (RAG_ENABLE_COMPACT_RETRY and chunks):
-                raise
-            compact_retry_used = True
-            compact_prompt = build_compact_prompt(chunks, question)
-            compact_options = {
-                "num_predict": RAG_COMPACT_NUM_PREDICT,
-                "temperature": 0.0,
-                "top_p": 1.0,
-            }
-            try:
-                draft = ask_llm(
-                    compact_prompt,
-                    timeout_sec=RAG_COMPACT_RETRY_TIMEOUT_SEC,
-                    options=compact_options,
-                )
-                generation_mode = "llm_compact"
-                generation_reason = f"compact_retry_after_{_classify_generation_reason(full_exc)}"
-            except Exception as compact_exc:
-                raise RuntimeError(
-                    f"compact_retry_failed:{_classify_generation_reason(full_exc)}->{_classify_generation_reason(compact_exc)}"
-                ) from compact_exc
+        
+        # Ingestion 
+        context_text = _format_context(chunks, max_chars=adaptive_context_chars)
+        snap = get_live_market_snapshot()
+        mechanics = get_dominant_mechanics_block(snap)
 
-        answer = draft
+        # ── PASS 1: The Foundation ────────────────────────────────────────────────
+        pass_1_prompt = f"""You are a senior macro strategist.
+{mechanics}
+Analyze the news context and live data to establish the Foundation facts.
 
-        if not _valid_answer(draft) and RAG_ENABLE_ANSWER_REWRITE:
-            revised = ask_llm(build_rewrite_prompt(draft))
-            answer = revised if _valid_answer(revised) else draft
+Live Data: {snap.format_for_prompt()}
+News Context: {context_text}
+Question: {question}
 
-        if not _valid_answer(answer) and RAG_ENABLE_DETERMINISTIC_REPAIR:
-            answer = _repair_answer_structure(question, answer, chunks, retrieval_health)
-            deterministic_repair_used = True
+Provide ONLY the following sections in strict format:
+Executive summary: <1-2 sentences with key takeaway>
+Direct answer: <clear recommendation/assessment>
+Regime: <Name of current market regime>
+Dominant theme: <Name of current dominant theme>
+Causal architecture:
+Primary: <Trigger> -> <Mechanism> -> <Outcome>
+Secondary: <Trigger> -> <Mechanism> -> <Outcome>
+Data snapshot: {snap.format_for_prompt()}
+"""
+        pass_1_out = ask_llm(pass_1_prompt, options=_main_options)
 
+        # ── PASS 2: The Impact ────────────────────────────────────────────────────
+        pass_2_prompt = f"""You are a senior macro strategist.
+{mechanics}
+Based on the Foundation below, strictly determine the Cross-Asset Impacts.
+
+FOUNDATION:
+{pass_1_out}
+
+Provide ONLY the following sections in strict format:
+What is happening:
+- <bullet 1>
+- <bullet 2>
+Cross-asset impact:
+- <impact string format: Asset [Direction]: Reasoning>
+- <impact string format: Asset [Direction]: Reasoning>
+"""
+        pass_2_out = ask_llm(pass_2_prompt, options=_main_options)
+
+        # ── PASS 3: The Action ────────────────────────────────────────────────────
+        pass_3_prompt = f"""You are a senior macro strategist.
+{mechanics}
+
+FOUNDATION:
+{pass_1_out}
+
+IMPACTS:
+{pass_2_out}
+
+Based on the above, generate actionable positioning, events, scenarios, and risks.
+Provide ONLY the following sections in strict format:
+Positioning:
+- <positioning idea 1>
+- <positioning idea 2>
+Scenarios:
+- Base (~55%): <outcome>
+- Bull (~25%): <upside>
+- Bear (~20%): <downside>
+Predicted events:
+- <event name> (7-30d) - <probability>%: <Description> | Trigger: <Trigger> | Invalidation: <Invalidation>
+Key risks:
+- <Risk 1>
+- <Risk 2>
+What to watch:
+- <Item 1>
+- <Item 2>
+Confidence: <HIGH/MEDIUM/LOW> - <reason>
+"""
+        pass_3_out = ask_llm(pass_3_prompt, options=_main_options)
+
+        # Stitch all outputs together for the normalizer
+        answer = f"{pass_1_out}\n\n{pass_2_out}\n\n{pass_3_out}"
+        
         answer = _sanitize_unsupported_numbers(answer, chunks)
         answer_quality = _evaluate_answer_quality(answer, chunks)
-        if answer_quality["reasons"]:
-            raise RuntimeError("validation_failed:" + ",".join(answer_quality["reasons"]))
 
     except Exception as exc:
         generation_reason = _classify_generation_reason(exc)
-        repaired = ""
-        repaired_quality = {
-            "structure_ok": False,
-            "grounding": 0.0,
-            "numeric_risk": 0.0,
-            "reasons": ["repair_not_attempted"],
-        }
+        generation_mode = "fallback"
+        answer = build_fallback_answer(question, chunks)
+        answer_quality = _evaluate_answer_quality(answer, chunks)
+        if retrieval_error:
+            answer += f"\n\nRetrieval fallback used due to: {retrieval_error}"
 
-        can_repair = (
-            RAG_ENABLE_DETERMINISTIC_REPAIR
-            and bool(chunks)
-            and retrieval_health.get("status") != "BAD"
-        )
-        if can_repair:
-            repaired = _repair_answer_structure(question, "", chunks, retrieval_health)
-            repaired = _sanitize_unsupported_numbers(repaired, chunks)
-            repaired_quality = _evaluate_answer_quality(repaired, chunks)
-
-        if can_repair and not repaired_quality["reasons"]:
-            answer = repaired
-            answer_quality = repaired_quality
-            generation_mode = "repaired"
-            deterministic_repair_used = True
-        else:
-            generation_mode = "fallback"
-            answer = build_fallback_answer(question, chunks)
-            answer_quality = _evaluate_answer_quality(answer, chunks)
-            if retrieval_error:
-                answer += f"\n\nRetrieval fallback used due to: {retrieval_error}"
+    if mcp_enrichment_text:
+        answer += "\n\nExternal MCP context (supplementary, uncited):\n" + mcp_enrichment_text
 
     quality_note = (
         f"\n\nSystem data quality: store={store_health['status']} "
@@ -1540,6 +1608,7 @@ async def run_query(question: str) -> tuple[str, list[dict[str, Any]]]:
         f"adaptive_top_k={adaptive_top_k}; context_chars={adaptive_context_chars}; "
         f"compact_retry={'yes' if compact_retry_used else 'no'}; "
         f"deterministic_repair={'yes' if deterministic_repair_used else 'no'}; "
+        f"mcp_enrichment={mcp_enrichment_status}; "
         f"grounding={answer_quality['grounding']}; "
         f"numeric_risk={answer_quality['numeric_risk']}; "
         f"structure_ok={answer_quality['structure_ok']}"

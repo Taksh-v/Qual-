@@ -61,7 +61,7 @@ def _ollama_embed_batch_url() -> str:
 
 
 def _embed_timeout_sec() -> float:
-    return float(_env_str("EMBED_TIMEOUT_SEC", "30"))
+    return float(_env_str("EMBED_TIMEOUT_SEC", "120"))
 
 
 def _embed_use_prefix() -> bool:

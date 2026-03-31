@@ -1,144 +1,414 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Macro Intelligence Console</title>
-  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
-  <link rel="stylesheet" href="/static/style.css">
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Inter+Tight:wght@500;600;700;800;900&family=Space+Grotesk:wght@400;500;700&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="/static/style.css" />
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries,typography"></script>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "on-primary-fixed-variant": "#5516be",
+              "error": "#ffb4ab",
+              "surface-container": "#201f22",
+              "on-background": "#e5e1e5",
+              "inverse-primary": "#6d3bd7",
+              "on-secondary-fixed": "#0f0069",
+              "surface-container-lowest": "#0e0e11",
+              "on-primary": "#3c0091",
+              "tertiary-container": "#00885d",
+              "primary": "#d0bcff",
+              "surface-variant": "#353438",
+              "secondary-fixed-dim": "#c3c0ff",
+              "on-primary-fixed": "#23005c",
+              "inverse-surface": "#e5e1e5",
+              "on-error-container": "#ffdad6",
+              "tertiary-fixed-dim": "#4edea3",
+              "on-secondary-container": "#b3b1ff",
+              "surface-tint": "#d0bcff",
+              "on-tertiary-fixed-variant": "#005236",
+              "secondary": "#c3c0ff",
+              "tertiary-fixed": "#6ffbbe",
+              "outline": "#908fa0",
+              "outline-variant": "#464554",
+              "surface-container-high": "#2a2a2d",
+              "primary-fixed-dim": "#d0bcff",
+              "on-tertiary-fixed": "#002113",
+              "on-tertiary-container": "#000703",
+              "surface-container-low": "#1c1b1e",
+              "on-surface-variant": "#c7c4d7",
+              "surface-dim": "#131316",
+              "on-secondary": "#1d00a5",
+              "tertiary": "#4edea3",
+              "on-error": "#690005",
+              "background": "#131316",
+              "primary-fixed": "#e9ddff",
+              "on-tertiary": "#003824",
+              "secondary-fixed": "#e2dfff",
+              "on-secondary-fixed-variant": "#3323cc",
+              "error-container": "#93000a",
+              "on-primary-container": "#340080",
+              "on-surface": "#e5e1e5",
+              "surface-bright": "#39393c",
+              "surface-container-highest": "#353438",
+              "inverse-on-surface": "#313033",
+              "surface": "#131316",
+              "secondary-container": "#3626ce",
+              "primary-container": "#a078ff"
+            },
+            fontFamily: {
+              "headline": ["Inter Tight"],
+              "body": ["Inter"],
+              "label": ["Space Grotesk"],
+              "mono": ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace"]
+            },
+            borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+          },
+        },
+      }
+    </script>
+<style>
+      .material-symbols-outlined {
+        font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+      }
+      .glass-ticker {
+        mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent);
+      }
+      .mono-data {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      }
+    </style>
 </head>
-<body>
-  <!-- Live data ticker bar -->
-  <div class="ticker-bar">
-    <div class="live-clock-bar" id="liveClock"><!-- JS fills this --></div>
-    <div class="ticker-track" id="tickerTrack">
-      <span class="ticker-item"><span class="t-name">Connecting to live data...</span></span>
+<body class="bg-surface-dim text-on-surface font-body selection:bg-primary/30">
+<!-- Top Navigation Bar (Shared Component) -->
+<header class="fixed top-0 w-full flex justify-between items-center px-6 h-16 bg-zinc-950/40 backdrop-blur-xl docked full-width z-50 no-border space-y-8 shadow-[0px_24px_48px_rgba(0,0,0,0.5)]">
+<div class="flex items-center gap-8">
+<span class="text-xl font-bold tracking-tighter text-zinc-100">OBSIDIAN.AI</span>
+<nav class="hidden md:flex items-center gap-6 font-['Inter_Tight'] tracking-tight text-sm font-medium">
+<a class="text-violet-400 font-semibold" href="#">Dashboard</a>
+<a class="text-zinc-500 hover:bg-zinc-800/50 transition-all duration-300 px-3 py-1 rounded" href="#">Portfolio</a>
+<a class="text-zinc-500 hover:bg-zinc-800/50 transition-all duration-300 px-3 py-1 rounded" href="#">Insights</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="hidden lg:flex items-center bg-surface-container-highest/50 px-4 py-1.5 rounded-full border border-outline-variant/15">
+<span class="material-symbols-outlined text-sm text-on-surface-variant mr-2">search</span>
+<input class="bg-transparent border-none text-xs focus:ring-0 placeholder:text-on-surface-variant w-48" placeholder="Search Markets..." type="text"/>
+</div>
+<div class="flex items-center gap-2">
+<button class="p-2 text-zinc-500 hover:bg-zinc-800/50 transition-all duration-300 rounded active:scale-95 duration-200">
+<span class="material-symbols-outlined">account_balance_wallet</span>
+</button>
+<button class="p-2 text-zinc-500 hover:bg-zinc-800/50 transition-all duration-300 rounded active:scale-95 duration-200">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 text-zinc-500 hover:bg-zinc-800/50 transition-all duration-300 rounded active:scale-95 duration-200">
+<span class="material-symbols-outlined">gps_fixed</span>
+</button>
+</div>
+</div>
+</header>
+<!-- Side Navigation Bar (Shared Component) -->
+<aside class="fixed left-0 top-0 h-full flex flex-col py-8 z-40 bg-zinc-900/60 backdrop-blur-2xl docked left-0 w-20 md:w-64 tonal-shift bg-zinc-900/40 shadow-2xl">
+<div class="px-6 mb-12 mt-16 md:mt-12">
+<div class="flex items-center gap-4 group cursor-pointer">
+<div class="w-10 h-10 rounded-full bg-primary-container flex items-center justify-center overflow-hidden">
+<img alt="User Profile" class="w-full h-full object-cover" data-alt="close-up portrait of professional male executive with sharp lighting and dark background" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB61HNMnXhS1gqvP-9lBeHQPnD8y4oEYhu8cIZFcYoNxXKLKy_T7QkeGgCxeO20GEmfYCJUKKHSOUM1n5EkNQL-gYCKXb37GB6w49QRhCLPwtzgM_-C3pmKra1hJIbJAbn-RUx7xXrYzUdS_EfubVDs_dVqpnPpZgL_tgArdZcfzF5ek7eaGbzbfQXwvoFar4ZDWvYFMAJqvlFznbt9p19YxipcgYQCSeh4SHdLLXbyONRgMZaz6EGlXxeJIB6ojPJB55__xL_Ajw"/>
+</div>
+<div class="hidden md:block">
+<h3 class="text-xs font-bold text-on-surface uppercase tracking-widest leading-none">Intelligence Core</h3>
+<p class="text-[10px] text-primary/70 mt-1 uppercase tracking-tighter">Active Session</p>
+</div>
+</div>
+</div>
+<nav class="flex-1 space-y-2">
+<!-- Dashboard Active -->
+<a class="flex items-center gap-4 px-6 py-4 text-violet-100 border-l-2 border-violet-500 bg-gradient-to-r from-violet-500/10 to-transparent transition-all duration-300" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">dashboard</span>
+<span class="hidden md:block font-['Inter'] text-xs uppercase tracking-widest">Dashboard</span>
+</a>
+<a class="flex items-center gap-4 px-6 py-4 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/30 hover:translate-x-1 transition-all duration-300" href="#">
+<span class="material-symbols-outlined">pie_chart</span>
+<span class="hidden md:block font-['Inter'] text-xs uppercase tracking-widest">Portfolio</span>
+</a>
+<a class="flex items-center gap-4 px-6 py-4 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/30 hover:translate-x-1 transition-all duration-300" href="#">
+<span class="material-symbols-outlined">insights</span>
+<span class="hidden md:block font-['Inter'] text-xs uppercase tracking-widest">Insights</span>
+</a>
+<a class="flex items-center gap-4 px-6 py-4 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/30 hover:translate-x-1 transition-all duration-300" href="#">
+<span class="material-symbols-outlined">security</span>
+<span class="hidden md:block font-['Inter'] text-xs uppercase tracking-widest">Risk</span>
+</a>
+<a class="flex items-center gap-4 px-6 py-4 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/30 hover:translate-x-1 transition-all duration-300" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="hidden md:block font-['Inter'] text-xs uppercase tracking-widest">Settings</span>
+</a>
+</nav>
+<div class="px-6 space-y-4 border-t border-outline-variant/10 pt-8">
+<a class="flex items-center gap-4 text-zinc-500 hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined text-lg">help</span>
+<span class="hidden md:block font-['Inter'] text-[10px] uppercase tracking-widest">Support</span>
+</a>
+<a class="flex items-center gap-4 text-zinc-500 hover:text-zinc-200 transition-colors" href="#">
+<span class="material-symbols-outlined text-lg">sensors</span>
+<span class="hidden md:block font-['Inter'] text-[10px] uppercase tracking-widest">System Status</span>
+</a>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="pl-20 md:pl-64 pt-16 min-h-screen">
+<!-- Glass Ticker Bar -->
+<div class="h-10 bg-surface-container-high/30 backdrop-blur-lg border-b border-outline-variant/10 flex items-center overflow-hidden glass-ticker sticky top-16 z-30">
+<div id="tickerTrack" class="ticker-track flex items-center space-x-12 px-6 whitespace-nowrap cursor-pointer">
+<div class="flex items-center gap-2">
+<span class="text-[10px] text-on-surface-variant font-medium tracking-widest">S&amp;P 500</span>
+<span class="mono-data text-xs text-tertiary">5,214.30 (+0.45%)</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="text-[10px] text-on-surface-variant font-medium tracking-widest">NASDAQ</span>
+<span class="mono-data text-xs text-tertiary">16,321.20 (+1.12%)</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="text-[10px] text-on-surface-variant font-medium tracking-widest">BTC/USD</span>
+<span class="mono-data text-xs text-error">64,210.50 (-0.82%)</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="text-[10px] text-on-surface-variant font-medium tracking-widest">ETH/USD</span>
+<span class="mono-data text-xs text-tertiary">3,450.15 (+2.14%)</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="text-[10px] text-on-surface-variant font-medium tracking-widest">GOLD</span>
+<span class="mono-data text-xs text-on-surface">2,350.20 (+0.02%)</span>
+</div>
+<!-- Duplicate for seamless loop if JS was allowed, but keeping as static high-end bar -->
+</div>
+</div>
+<!-- 3-Column Intelligence Grid -->
+<div class="p-8 grid grid-cols-1 xl:grid-cols-12 gap-8">
+<!-- Left & Center Column (Combined Layout) -->
+<div class="xl:col-span-8 space-y-12">
+<!-- Portfolio Intelligence Section -->
+<section class="space-y-6">
+<div class="flex justify-between items-end">
+<div class="space-y-1">
+<h2 class="text-sm font-label uppercase tracking-[0.2em] text-on-surface-variant">Capital Allocation</h2>
+<h1 class="text-5xl font-headline font-black tracking-tighter text-on-background">Portfolio Intelligence</h1>
+</div>
+<div class="flex gap-2">
+<button class="px-4 py-2 bg-surface-container-high hover:bg-surface-container-highest transition-colors rounded-xl text-xs font-medium border border-outline-variant/10">1D</button>
+<button class="px-4 py-2 bg-primary-container text-on-primary-container rounded-xl text-xs font-bold shadow-[0px_0px_12px_rgba(109,59,215,0.2)]">1W</button>
+<button class="px-4 py-2 bg-surface-container-high hover:bg-surface-container-highest transition-colors rounded-xl text-xs font-medium border border-outline-variant/10">1M</button>
+</div>
+</div>
+<div class="relative group">
+<!-- Main Portfolio Card -->
+<div class="bg-surface-container-low/80 backdrop-blur-md rounded-2xl p-8 border border-outline-variant/5 shadow-2xl relative overflow-hidden">
+<!-- Background Glow -->
+<div class="absolute top-0 right-0 w-96 h-96 bg-primary/10 blur-[100px] -translate-y-1/2 translate-x-1/2 rounded-full"></div>
+<div class="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-8">
+<div>
+<p class="text-xs font-mono text-on-surface-variant/70 uppercase tracking-widest mb-1">Portfolio Balance</p>
+<div class="flex items-baseline gap-3">
+<span id="balanceValue" class="text-6xl font-headline font-black tracking-tighter text-on-background">$2,482,100</span>
+<span class="text-tertiary font-mono text-sm px-2 py-0.5 bg-tertiary/10 rounded border border-tertiary/20">+13.32%</span>
+</div>
+<p class="text-xs text-on-surface-variant mt-4 font-body leading-relaxed max-w-sm">
+                                        Your portfolio is currently outperforming the global benchmark by <span class="text-on-surface font-semibold">4.2%</span>. AI suggests rebalancing Tech exposure.
+                                    </p>
+</div>
+<div class="w-full md:w-1/2 h-40 relative">
+<!-- Custom Multi-Color Trend Line Representation -->
+<svg class="w-full h-full drop-shadow-[0_0_8px_rgba(208,188,255,0.3)]" viewbox="0 0 400 100">
+<defs>
+<lineargradient id="lineGradient" x1="0%" x2="100%" y1="0%" y2="0%">
+<stop offset="0%" style="stop-color:var(--tw-color-primary);stop-opacity:1"></stop>
+<stop offset="60%" style="stop-color:var(--tw-color-primary);stop-opacity:1"></stop>
+<stop offset="100%" style="stop-color:var(--tw-color-tertiary);stop-opacity:1"></stop>
+</lineargradient>
+<lineargradient id="fillGradient" x1="0%" x2="0%" y1="0%" y2="100%">
+<stop offset="0%" style="stop-color:var(--tw-color-primary);stop-opacity:0.2"></stop>
+<stop offset="100%" style="stop-color:var(--tw-color-primary);stop-opacity:0"></stop>
+</lineargradient>
+</defs>
+<path d="M0,80 Q50,75 80,40 T150,50 T220,20 T300,45 T400,10" fill="none" stroke="url(#lineGradient)" stroke-linecap="round" stroke-width="3"></path>
+<path d="M0,80 Q50,75 80,40 T150,50 T220,20 T300,45 T400,10 V100 H0 Z" fill="url(#fillGradient)"></path>
+</svg>
+<div class="absolute bottom-0 w-full flex justify-between text-[10px] font-mono text-on-surface-variant/40 pt-2 border-t border-outline-variant/10">
+<span>MON</span><span>WED</span><span>FRI</span><span>SUN</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Intelligence Command well -->
+<section class="bg-surface-container-low p-1 rounded-2xl mb-8">
+<div class="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/5">
+<div class="flex justify-between items-center mb-4">
+    <h3 class="text-sm font-label uppercase tracking-widest text-on-surface-variant">Intelligence Command</h3>
+    <div class="flex items-center gap-2">
+        <span id="regimeBadge" class="text-[10px] font-mono tracking-widest px-2 py-1 rounded bg-surface-container-high border border-outline-variant/10 text-on-surface-variant">Regime: STANDBY</span>
+        <span id="signalBadge" class="text-[10px] font-mono tracking-widest px-2 py-1 rounded bg-surface-container-high border border-outline-variant/10 text-on-surface-variant">Signal: IDLE</span>
+        <span id="modelBadge" class="text-[10px] font-mono tracking-widest px-2 py-1 rounded bg-surface-container-high border border-outline-variant/10 text-on-surface-variant">Intel: GROQ</span>
     </div>
-  </div>
-
-  <div class="app">
-    <section class="panel">
-      <h2 class="title">Command</h2>
-      <textarea id="question" placeholder="Ask your macro question"></textarea>
-
-      <div class="row mode-row">
-        <div class="field">
-          <label>Geography</label>
-          <select id="geography">
-            <option value="US">US</option>
-            <option value="EU">EU</option>
-            <option value="CHINA">China</option>
-            <option value="GLOBAL">Global</option>
-          </select>
+</div>
+<textarea id="question" class="w-full bg-surface-container-high/40 text-on-surface border border-outline-variant/10 rounded-xl p-4 text-sm font-body mb-4 focus:ring-1 focus:ring-primary focus:border-primary placeholder:text-zinc-600 resize-none h-24" placeholder="Analyze the current macro regime..."></textarea>
+<div class="flex flex-wrap gap-4 items-center justify-between">
+    <div class="flex gap-4">
+        <div>
+            <label class="block text-[10px] text-on-surface-variant uppercase tracking-widest mb-1">Geography</label>
+            <select id="geography" class="bg-surface-container-highest text-xs text-on-surface border border-outline-variant/10 rounded-lg px-3 py-2 form-select focus:ring-primary">
+                <option value="UNITED STATES">UNITED STATES</option>
+                <option value="EUROPE">EUROPE</option>
+                <option value="ASIA">ASIA</option>
+                <option value="GLOBAL">GLOBAL</option>
+            </select>
         </div>
-        <div class="field">
-          <label>Horizon</label>
-          <select id="horizon">
-            <option value="SHORT_TERM">Short-Term</option>
-            <option value="MEDIUM_TERM" selected>Med-Term</option>
-            <option value="LONG_TERM">Long-Term</option>
-          </select>
+        <div>
+            <label class="block text-[10px] text-on-surface-variant uppercase tracking-widest mb-1">Horizon</label>
+            <select id="horizon" class="bg-surface-container-highest text-xs text-on-surface border border-outline-variant/10 rounded-lg px-3 py-2 form-select focus:ring-primary">
+                <option value="TACTICAL">TACTICAL (1-3M)</option>
+                <option value="CYCLICAL">CYCLICAL (6-12M)</option>
+                <option value="SECULAR">SECULAR (1-3Y)</option>
+            </select>
         </div>
-        <div class="field">
-          <label>Mode</label>
-          <select id="responseMode">
-            <option value="brief" selected>Brief</option>
-            <option value="detailed">Detailed</option>
-          </select>
-        </div>
-      </div>
+    </div>
+    <div class="flex items-center gap-4">
+        <span id="genStatus" class="text-xs font-mono text-on-surface-variant">Ready</span>
+        <button id="runBtn" class="px-6 py-2.5 bg-primary text-on-primary-fixed uppercase text-xs font-bold tracking-widest rounded-xl hover:bg-primary-container transition-all hover:scale-105 shadow-[0_0_15px_rgba(208,188,255,0.3)]">
+            Generate Insights
+        </button>
+    </div>
+</div>
+</div>
+</section>
 
-      <div class="row3">
-        <button id="runBtn" class="btn-primary">Re-analyze</button>
-        <button id="compareBtn" class="btn-secondary">Side-by-Side</button>
-        <button id="exportBtn" class="btn-ghost">Export Note</button>
-      </div>
-
-      <input id="compareQuestion" placeholder="Second question for comparison" style="margin-top:8px;" />
-
-      <h2 class="title" style="margin-top:12px;">Critical Indicators</h2>
-      <div id="marketDataStamp" class="live-stamp">Live data loading...</div>
-      <div id="indicatorGrid" class="indicator-grid"></div>
-    </section>
-
-    <section class="panel" id="centerPanel">
-      <div class="status">
-        <div id="regimeBadge" class="badge regime warn">REGIME: WAITING</div>
-        <div id="signalBadge" class="badge">CROSS-ASSET: WAITING</div>
-        <div id="modelBadge" class="badge model">MODEL: WAITING</div>
-      </div>
-
-      <div id="confidenceBanner" class="banner"></div>
-      <div id="genStatus" class="gen-status">Idle. Enter a question and click Re-analyze.</div>
-
-      <div id="analysisZone" class="analysis-zone">
-        <div id="plainSummary" class="plain-summary">
-          <strong>What This Means</strong>
-          <div class="summary-grid">
-            <div class="summary-card">
-              <div class="summary-title">Big Picture</div>
-              <div id="summaryBigPicture" class="summary-text">Run analysis to view summary.</div>
-            </div>
-            <div class="summary-card">
-              <div class="summary-title">What To Do</div>
-              <div id="summaryAction" class="summary-text">Run analysis to view tactical action.</div>
-            </div>
-            <div class="summary-card">
-              <div class="summary-title">Main Risk</div>
-              <div id="summaryRisk" class="summary-text">Run analysis to view risk watchouts.</div>
-            </div>
-            <div class="summary-card">
-              <div class="summary-title">Evidence Quality</div>
-              <div id="summaryQuality" class="summary-text">Waiting for model output.</div>
-            </div>
-          </div>
-        </div>
-        <details id="responseCard" class="card" open>
-          <summary>Best Response</summary>
-          <div id="responseText" class="content"></div>
-        </details>
-        <!-- Feedback bar (shown after a response is generated) -->
-        <div id="feedbackBar" class="feedback-bar" style="display:none;">
-          <span class="feedback-label">Was this response useful?</span>
-          <button class="fb-btn fb-up"   onclick="submitFeedback(5)" title="Helpful">&#128077; Yes</button>
-          <button class="fb-btn fb-mid"  onclick="submitFeedback(3)" title="Partially helpful">&#128528; Partly</button>
-          <button class="fb-btn fb-down" onclick="submitFeedback(1)" title="Not helpful">&#128078; No</button>
-          <span id="feedbackStatus" class="feedback-status"></span>
-        </div>
-      </div>
-
-      <div id="compareWrap" class="compare">
-        <div id="compareA" class="compare-pane"></div>
-        <div id="compareB" class="compare-pane"></div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <h2 class="title">Evidence Coverage</h2>
-      <div id="evidenceCoverage" style="font-family:var(--font-mono);font-size:12px;line-height:1.4;"></div>
-
-      <h2 class="title">Detected Inputs</h2>
-      <div id="detected" style="font-family:var(--font-mono);font-size:12px;line-height:1.4;"></div>
-
-      <h2 class="title" style="margin-top:12px;">Question History</h2>
-      <div id="history"></div>
-
-      <h2 class="title" style="margin-top:12px;">Company Fundamentals</h2>
-      <div class="row" style="gap:6px;margin-bottom:6px;">
-        <input id="fundamentalsTicker" placeholder="e.g. AAPL" style="flex:1;min-width:80px;" maxlength="10" />
-        <button class="btn-secondary" onclick="lookupFundamentals()">Look up</button>
-      </div>
-      <div id="fundamentalsResult" style="font-family:var(--font-mono);font-size:11px;line-height:1.5;white-space:pre-wrap;"></div>
-
-      <h2 class="title" style="margin-top:12px;">Hedge Analysis</h2>
-      <div class="row" style="gap:6px;margin-bottom:4px;">
-        <input id="hedgeTickers" placeholder="Tickers (e.g. AAPL,MSFT)" style="flex:1;" />
-      </div>
-      <button class="btn-secondary" style="width:100%;margin-bottom:4px;" onclick="runHedge()">Analyse Hedging</button>
-      <div id="hedgeResult" style="font-family:var(--font-mono);font-size:11px;line-height:1.5;white-space:pre-wrap;max-height:260px;overflow-y:auto;"></div>
-    </section>
-  </div>
-
-  <script src="/static/script.js"></script>
-</body>
-</html>
+<!-- Streaming Response Output Area -->
+<section class="bg-surface-container-high/20 p-6 rounded-2xl border border-outline-variant/10 overflow-hidden relative">
+    <div id="responseText" class="font-body text-sm leading-relaxed text-on-surface-variant prose prose-invert max-w-none">
+        <!-- Markdown tables and narrative stream here -->
+    </div>
+</section>
+</div>
+<!-- Right Column -->
+<div class="xl:col-span-4 space-y-8">
+<!-- Risk Intelligence Score -->
+<section class="bg-surface-container-low p-8 rounded-2xl border border-outline-variant/10 flex flex-col items-center text-center shadow-xl">
+<h3 class="text-sm font-label uppercase tracking-widest text-on-surface-variant mb-8">Risk Intelligence</h3>
+<!-- Concentric Ring Chart -->
+<div class="relative w-48 h-48 flex items-center justify-center">
+<svg class="w-full h-full -rotate-90">
+<!-- Outer Track -->
+<circle class="text-surface-container-highest" cx="96" cy="96" fill="transparent" r="88" stroke="currentColor" stroke-width="8"></circle>
+<!-- Active Progress -->
+<circle class="text-primary drop-shadow-[0_0_8px_rgba(208,188,255,0.4)]" cx="96" cy="96" fill="transparent" r="88" stroke="currentColor" stroke-dasharray="553" stroke-dashoffset="40" stroke-width="8"></circle>
+<!-- Inner Track -->
+<circle class="text-surface-container-highest/50" cx="96" cy="96" fill="transparent" r="72" stroke="currentColor" stroke-width="4"></circle>
+</svg>
+<div class="absolute flex flex-col items-center">
+<span id="riskScoreVal" class="text-5xl font-headline font-black text-on-background leading-none">A+</span>
+<span class="text-[10px] font-mono text-tertiary mt-2 tracking-widest uppercase">Optimized</span>
+</div>
+</div>
+<div id="indicatorGrid" class="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 gap-4 w-full">
+<!-- Indicators will populate here -->
+</div>
+</section>
+<!-- Market Pulse Section -->
+<section class="bg-surface-container-high/40 rounded-2xl border border-outline-variant/10 overflow-hidden">
+<div class="p-6 border-b border-outline-variant/10">
+<h3 class="text-sm font-label uppercase tracking-widest text-on-surface-variant">Market Pulse</h3>
+</div>
+<div class="p-6 space-y-6">
+<!-- Sector Item -->
+<div class="space-y-3">
+<div class="flex justify-between items-center">
+<span class="text-xs font-bold tracking-tight">Tech Sector</span>
+<span class="text-xs font-mono text-tertiary">+2.1%</span>
+</div>
+<div class="h-12 w-full">
+<svg class="w-full h-full" viewbox="0 0 200 40">
+<path d="M0,35 Q30,32 50,15 T100,25 T150,10 T200,5" fill="none" stroke="var(--tw-color-tertiary)" stroke-width="2"></path>
+</svg>
+</div>
+</div>
+<!-- Sector Item -->
+<div class="space-y-3">
+<div class="flex justify-between items-center">
+<span class="text-xs font-bold tracking-tight">Energy</span>
+<span class="text-xs font-mono text-error">-0.4%</span>
+</div>
+<div class="h-12 w-full opacity-60">
+<svg class="w-full h-full" viewbox="0 0 200 40">
+<path d="M0,10 Q30,15 50,25 T100,20 T150,35 T200,30" fill="none" stroke="var(--tw-color-error)" stroke-width="2"></path>
+</svg>
+</div>
+</div>
+<!-- Sector Item -->
+<div class="space-y-3">
+<div class="flex justify-between items-center">
+<span class="text-xs font-bold tracking-tight">Health</span>
+<span class="text-xs font-mono text-on-surface-variant">+0.1%</span>
+</div>
+<div class="h-12 w-full">
+<svg class="w-full h-full opacity-40" viewbox="0 0 200 40">
+<path d="M0,20 Q40,22 80,20 T160,20 T200,20" fill="none" stroke="var(--tw-color-on-surface-variant)" stroke-width="2"></path>
+</svg>
+</div>
+</div>
+</div>
+<div class="p-6 bg-surface-container-highest/20">
+<div class="flex items-center gap-3 p-4 bg-primary-container/10 rounded-xl border border-primary-container/20">
+<span class="material-symbols-outlined text-primary text-lg">info</span>
+<p class="text-[10px] text-on-surface-variant leading-tight">
+                                High correlation detected between Tech and AI infrastructure sectors. Consider diversifying.
+                            </p>
+</div>
+</div>
+</section>
+<!-- Action Card -->
+<div class="group cursor-pointer relative rounded-2xl overflow-hidden aspect-[4/3] mt-8">
+<img alt="Premium Insights" class="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" data-alt="abstract digital visualization of blockchain network nodes with glowing violet connections on deep black void" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBAgRY22ku-mx7n25VlUPH1gtPkhaZDN9scmPwzbeu_WTLcRRVPGyABJHnkSxfv0FxVHuT_MHTloEmDt_s5mhYZYrRAlnwrPcJNecfIXNL9GMfY5qVqJcFLXrA_EXlN9b0K5WsQd61fJrsCEXUkxEHt-rhvD81MSZBvR-6FBpydgJtmAvf4Ebi02lelfFhkWBmVp2rhHU8pjg7UX7xSRn-9rnDz7x_LA5rUUlIotszW3lYN_LqzsVhNR0m9fPAuFFknXh7DUcejaA"/>
+<div class="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/40 to-transparent"></div>
+<div class="absolute bottom-6 left-6 right-6">
+<span class="text-[10px] font-mono text-primary uppercase tracking-[0.3em] font-bold">Terminal Connected</span>
+<h4 class="text-xl font-headline font-bold text-white mt-2 mb-4 leading-tight">Live Macro Engine Active</h4>
+<div class="flex items-center gap-2">
+    <span class="w-2 h-2 rounded-full bg-tertiary animate-pulse"></span>
+    <span class="text-xs font-mono text-tertiary">Streaming</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+<script src="/static/script.js?v=9"></script>
+<!-- Hidden Legacy IDs to prevent script.js crashes -->
+<div style="display:none;" id="legacy-stubs">
+    <div id="detected"></div>
+    <div id="evidenceCoverage"></div>
+    <div id="summaryBigPicture"></div>
+    <div id="summaryAction"></div>
+    <div id="summaryRisk"></div>
+    <div id="summaryQuality"></div>
+    <div id="feedbackBar"></div>
+    <div id="feedbackStatus"></div>
+    <div id="history"></div>
+    <div id="compareWrap"></div>
+    <div id="analysisZone"></div>
+    <div id="compareA"></div>
+    <div id="compareB"></div>
+    <input id="compareQuestion" type="text" />
+    <button id="compareBtn"></button>
+    <div id="fundamentalsTicker"></div>
+    <div id="fundamentalsResult"></div>
+    <div id="hedgeTickers"></div>
+    <div id="hedgeResult"></div>
+    <div id="liveClock"></div>
+</div>
+</body></html>

@@ -4,7 +4,7 @@ import asyncio
 from rag.rag_core import ask_rag
 
 async def main():
-    result = await ask_rag("Summarize the recent SEC 8-K filing for a recent company.")
+    result = await ask_rag("Summarize the recent SEC 8-K filing for K.")
     print("ANSWER:")
     print(result["answer"])
     print("\nSOURCES:")
