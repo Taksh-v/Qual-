@@ -374,7 +374,45 @@ class BloombergFormatter:
     # ── Internal parsers ───────────────────────────────────────────────────────
 
     def _parse_answer_fields(self, text: str) -> dict[str, str]:
-        """Extract structured fields from a free-text LLM answer."""
+        """Extract structured fields from a free-text LLM answer or parsed JSON."""
+        try:
+            import json
+            data = json.loads(text)
+            fields: dict[str, str] = {}
+            fields["executive_summary"] = data.get("executive_summary", "")
+            fields["direct_answer"] = data.get("direct_answer", "")
+            fields["data_snapshot"] = data.get("data_snapshot", "")
+            fields["causal_chain"] = data.get("causal_chain", "")
+            
+            wih = data.get("what_is_happening", [])
+            fields["what_is_happening"] = "\n  ".join(f"{item}" for item in wih) if isinstance(wih, list) else str(wih)
+            
+            cai = data.get("cross_asset_impacts", [])
+            if isinstance(cai, list) and cai and isinstance(cai[0], dict):
+                fields["market_impact"] = "\n  ".join(f"{item.get('asset_class', '')}: {item.get('direction', '')} — {item.get('mechanism', '')}" for item in cai)
+            else:
+                fields["market_impact"] = str(data.get("market_impact", ""))
+                
+            scenarios = data.get("scenarios", [])
+            if isinstance(scenarios, list) and scenarios and isinstance(scenarios[0], dict):
+                fields["scenarios"] = "\n  ".join(f"{item.get('name', '')} (~{item.get('probability_pct', '')}%): {item.get('narrative', '')}" for item in scenarios)
+            else:
+                fields["scenarios"] = str(data.get("scenarios", ""))
+                
+            wtw = data.get("what_to_watch", [])
+            fields["watch_next"] = "\n  ".join(f"{item}" for item in wtw) if isinstance(wtw, list) else str(wtw)
+            
+            risks = data.get("main_risks", [])
+            fields["main_risks"] = "\n  ".join(f"{item}" for item in risks) if isinstance(risks, list) else str(risks)
+            
+            fields["confidence"] = data.get("confidence", "")
+            fields["consequences"] = fields["main_risks"]
+            fields["market_map"] = fields["market_impact"]
+            fields["why_likely"] = fields["what_is_happening"]
+            return fields
+        except Exception:
+            pass # Fall back to regex parser
+
         fields: dict[str, str] = {
             "executive_summary": "",
             "direct_answer": "",

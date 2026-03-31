@@ -669,8 +669,7 @@ def intelligence_export(req: IntelligenceRequest):
 @app.post("/intelligence/stream")
 @_rl(_RL_LLM)
 async def intelligence_stream(req: IntelligenceRequest, request: Request):
-    def event_stream():
-        PROGRESS_PREFIX = "<<PROGRESS>>"
+    async def event_stream():
         try:
             snapshot = _build_snapshot(req)
         except Exception as exc:
@@ -682,40 +681,40 @@ async def intelligence_stream(req: IntelligenceRequest, request: Request):
         response_text = ""
 
         try:
-            for chunk in macro_intelligence_pipeline(
+            from intelligence.agentic_rag.orchestrator import AgenticOrchestrator
+            orchestrator = AgenticOrchestrator()
+            
+            async for event in orchestrator.run_async(
                 req.question,
-                req.indicator_overrides,
                 geography=req.geography,
                 horizon=req.horizon,
                 response_mode=req.response_mode,
             ):
-                if isinstance(chunk, str) and chunk.startswith(PROGRESS_PREFIX):
-                    # Pipeline progress is emitted as its own SSE event so the UI
-                    # can show stages without polluting the response text.
-                    try:
-                        progress_payload = json.loads(chunk[len(PROGRESS_PREFIX) :])
-                    except Exception:
-                        progress_payload = {"stage": "unknown", "raw": chunk}
-                    yield _sse("progress", progress_payload)
-                    continue
-                if "▸ RESPONSE" in chunk:
+                if event.stage == "planning":
+                    yield _sse("progress", {"stage": "planning", "message": "Planning..."})
+                elif event.stage == "retrieval":
+                    yield _sse("progress", {"stage": "retrieval", "chunks": event.data.get("chunks_retrieved", 0)})
+                elif event.stage == "agent_start":
+                    yield _sse("progress", {"stage": "agent_start", "message": "Agents starting..."})
+                elif event.stage == "agent_brief":
+                    yield _sse("progress", {"stage": "agent_brief", "message": f"Agent finished: {event.agent_name}"})
+                elif event.stage == "synthesis":
+                    yield _sse("progress", {"stage": "synthesis", "message": "Synthesizing Markdown..."})
                     yield _sse("section_start", {"section": "response"})
-                    continue
-                if chunk.startswith("━━━") or chunk.startswith("━"):
-                    continue
-
-                response_text += chunk
-                yield _sse("token", {"section": "response", "text": chunk})
-
-            yield _sse(
-                "final",
-                _make_structured_payload(
-                    snapshot,
-                    response_text.strip(),
-                    get_last_model_used(),
-                    response_mode=req.response_mode,
-                ),
-            )
+                elif event.stage == "token":
+                    chunk = event.data["text"]
+                    response_text += chunk
+                    yield _sse("token", {"section": "response", "text": chunk})
+                elif event.stage == "final":
+                    yield _sse(
+                        "final",
+                        _make_structured_payload(
+                            snapshot,
+                            response_text.strip(),
+                            "Agentic RAG",
+                            response_mode=req.response_mode,
+                        ),
+                    )
         except Exception as exc:
             logger.exception("/intelligence/stream generation failed")
             yield _sse("error", {"message": str(exc), "type": exc.__class__.__name__})
@@ -753,6 +752,9 @@ def market_data_live_stream(request: Request):
     After a full cycle, sleeps until the next scheduled refresh.
     """
     prev: dict[str, float] = {}
+    stream_high: dict[str, float] = {}
+    stream_low: dict[str, float] = {}
+    sticky_dir: dict[str, str] = {}
 
     sleep_open_s = int(os.getenv("MARKET_DATA_STREAM_SLEEP_OPEN_SEC", "60"))
     sleep_closed_s = int(os.getenv("MARKET_DATA_STREAM_SLEEP_CLOSED_SEC", "120"))
@@ -764,18 +766,37 @@ def market_data_live_stream(request: Request):
             val = live.get(key)
             if val is None:
                 continue   # omit keys not yet available in this partial
+
+            prev_high = stream_high.get(key)
+            prev_low = stream_low.get(key)
+            if prev_high is None or val > prev_high:
+                stream_high[key] = val
+            if prev_low is None or val < prev_low:
+                stream_low[key] = val
+
             prev_val = prev.get(key)
-            direction = "flat"
+            direction = sticky_dir.get(key, "flat")
             change    = None
             if prev_val is not None:
-                direction = "up" if val > prev_val else ("down" if val < prev_val else "flat")
                 change    = round(val - prev_val, 6)
+
+            high_before = prev_high if prev_high is not None else val
+            low_before = prev_low if prev_low is not None else val
+            if val > high_before:
+                direction = "up"
+            elif val < low_before:
+                direction = "down"
+
+            sticky_dir[key] = direction
+
             formatted[key] = {
                 "label":     label,
                 "unit":      unit,
                 "value":     round(val, 4),
                 "direction": direction,
                 "change":    change,
+                "stream_high": round(stream_high[key], 4) if key in stream_high else None,
+                "stream_low": round(stream_low[key], 4) if key in stream_low else None,
             }
             prev[key] = val
         return formatted
@@ -1511,4 +1532,11 @@ async def intelligence_bloomberg(req: AgenticRequest, request: Request):
 
 @app.get("/", response_class=FileResponse)
 def dashboard():
-    return FileResponse("api/static/index.html")
+    return FileResponse(
+        "api/static/index.html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+    )

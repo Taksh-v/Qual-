@@ -265,10 +265,10 @@ async def _run_technical_analyst(state: AgentState) -> AgentOutput:
     )
 
 
-async def _run_synthesis_agent(state: AgentState) -> str:
+def _run_synthesis_agent_stream(state: AgentState):
     """
-    SynthesisAgent (Portfolio Manager): Synthesizes all agent briefs into a
-    Bloomberg-grade final analysis with explicit conflict resolution.
+    SynthesisAgent (Head Macro Strategist): Synthesizes all agent briefs into a
+    conversational Markdown final analysis. Yields tokens.
     """
     agent_briefs = "\n\n".join(
         f"--- {ao.agent_name} (confidence: {ao.confidence:.0%}) ---\n{ao.brief}"
@@ -287,57 +287,24 @@ async def _run_synthesis_agent(state: AgentState) -> str:
         for i, c in enumerate(state.retrieved_chunks[:8])
     ) or "No sources available."
 
-    prompt = (
-        "You are the Head Portfolio Manager at a Bloomberg Intelligence-grade research firm. "
-        "You have received specialist briefs from your analysts. "
-        "Synthesize them into a definitive, data-rich analysis for the client.\n\n"
-        f"CLIENT QUESTION: {state.question}\n"
-        f"Geography: {state.geography} | Horizon: {state.horizon}\n\n"
-        f"LIVE MARKET DATA:\n{indicators_str}\n\n"
-        f"ANALYST BRIEFS:\n{agent_briefs}\n\n"
-        f"EVIDENCE SOURCES:\n{sources_str}\n\n"
-        "Write the final analysis in EXACTLY this Bloomberg format:\n"
-        "Executive summary: <2-sentence bottom line with one key number>\n"
-        "Direct answer: <specific answer to the question with data>\n"
-        "Data snapshot: <3-5 key metrics with values and Δ direction>\n"
-        "Causal chain: <trigger> → <transmission> → <market impact>\n"
-        "What is happening:\n"
-        "- <specific development with [Sx] citation>\n"
-        "- <mechanism: how it transmits to markets>\n"
-        "Market impact:\n"
-        "- Equities: <direction + sector + magnitude>\n"
-        "- Rates/Bonds: <yield direction + bps est.>\n"
-        "- FX: <dollar direction + key pair>\n"
-        "- Commodities: <signal if relevant>\n"
-        "Scenarios (must sum to 100%):\n"
-        "- Base (~55%): <most likely with catalyst>\n"
-        "- Bull (~25%): <upside trigger>\n"
-        "- Bear (~20%): <downside risk>\n"
-        "What to watch:\n"
-        "- <specific data release or market level>\n"
-        "- <second catalyst>\n"
-        "Confidence: <HIGH/MEDIUM/LOW> — <reason, including agent agreement>\n\n"
-        "Rules: Cite sources with [S1],[S2] etc. Use specific numbers. "
-        "Resolve any conflicts between analyst views explicitly."
+    from intelligence.prompt_templates import CONVERSATIONAL_SYNTHESIS_TEMPLATE
+    prompt = CONVERSATIONAL_SYNTHESIS_TEMPLATE.format(
+        question=state.question,
+        geography=state.geography,
+        horizon=state.horizon,
+        indicators_str=indicators_str,
+        agent_briefs=agent_briefs,
+        sources_str=sources_str
     )
 
     try:
-        from intelligence.llm_provider import generate_text
-        answer, _ = generate_text(prompt, temperature=0.15, max_tokens=900, timeout_sec=90.0)
-        return answer
+        from intelligence.llm_provider import generate_text_stream
+        return generate_text_stream(prompt, temperature=0.20, max_tokens=1500, timeout_sec=120.0)
     except Exception as exc:
         logger.error("[SynthesisAgent] LLM failed: %s", exc)
-        # Structured fallback from agent briefs
-        briefs_summary = "\n".join(
-            f"• {ao.agent_name}: {ao.brief[:150]}..."
-            for ao in state.agent_outputs[:3]
-        )
-        return (
-            f"Executive summary: Analysis of {state.question} — multi-agent synthesis.\n"
-            f"Direct answer: Based on available data for {state.geography} / {state.horizon}.\n"
-            f"What is happening:\n{briefs_summary}\n"
-            f"Confidence: LOW — LLM synthesis unavailable: {exc}"
-        )
+        def fallback():
+            yield f"Synthesis unavailable: {exc}"
+        return fallback()
 
 
 # ── Main Orchestrator ─────────────────────────────────────────────────────────
@@ -452,8 +419,24 @@ class AgenticOrchestrator:
             data={"message": "Synthesizing agent briefs..."},
             elapsed_ms=state.elapsed_ms(),
         )
-        draft = await _run_synthesis_agent(state)
-        state.draft_answer = draft
+        
+        stream_gen = _run_synthesis_agent_stream(state)
+        loop = asyncio.get_event_loop()
+        def get_next(gen):
+            try:
+                return next(gen)
+            except StopIteration:
+                return None
+                
+        draft_text = ""
+        while True:
+            token = await loop.run_in_executor(None, get_next, stream_gen)
+            if token is None:
+                break
+            draft_text += token
+            yield AgentEvent(stage="token", data={"text": token}, elapsed_ms=state.elapsed_ms())
+            
+        state.draft_answer = draft_text
         state.mark_stage("first_synthesis")
 
         # ── STAGE 5: REFLECT → ITERATE if needed ────────────────────────────
@@ -494,8 +477,16 @@ class AgenticOrchestrator:
             await self._act_phase(state, queries=gap_queries)
 
             # Re-synthesize with enriched context
-            draft = await _run_synthesis_agent(state)
-            state.draft_answer = draft
+            stream_gen = _run_synthesis_agent_stream(state)
+            draft_text = ""
+            while True:
+                token = await loop.run_in_executor(None, get_next, stream_gen)
+                if token is None:
+                    break
+                draft_text += token
+                yield AgentEvent(stage="token", data={"text": token}, elapsed_ms=state.elapsed_ms())
+            
+            state.draft_answer = draft_text
             state.mark_stage(f"synthesis_iter_{state.iteration}")
 
         state.final_answer = state.draft_answer

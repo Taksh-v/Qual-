@@ -104,9 +104,14 @@ if $STOP; then
     fi
   done
   # Also kill by process name as fallback
-  pkill -f "uvicorn api.app:app" 2>/dev/null && success "Killed stray uvicorn process" || true
+  pkill -9 -f "uvicorn" 2>/dev/null && success "Killed stray uvicorn processes" || true
+  pkill -9 -f "api.app" 2>/dev/null && success "Killed stray api.app processes" || true
   pkill -f "run_scheduler.py"    2>/dev/null && success "Killed stray scheduler process" || true
   pkill -f "run_mcp_http.py"     2>/dev/null && success "Killed stray MCP process" || true
+  
+  # Ensure the port is actually free
+  fuser -k "$PORT/tcp" 2>/dev/null && success "Freed port $PORT" || true
+
   success "All services stopped."
   exit 0
 fi

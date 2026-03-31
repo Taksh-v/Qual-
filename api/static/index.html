@@ -163,7 +163,7 @@
 <!-- Main Content Area -->
 <main class="pl-20 md:pl-64 pt-16 min-h-screen">
 <!-- Glass Ticker Bar -->
-<div class="h-10 bg-surface-container-high/30 backdrop-blur-lg border-b border-outline-variant/10 flex items-center overflow-hidden glass-ticker sticky top-16 z-30">
+<div class="h-10 bg-surface-container-high/30 backdrop-blur-lg border-b border-outline-variant/10 flex items-center overflow-x-auto overflow-y-hidden glass-ticker ticker-scrollable sticky top-16 z-30">
 <div id="tickerTrack" class="ticker-track flex items-center space-x-12 px-6 whitespace-nowrap cursor-pointer">
 <div class="flex items-center gap-2">
 <span class="text-[10px] text-on-surface-variant font-medium tracking-widest">S&amp;P 500</span>
@@ -299,24 +299,22 @@
 <div class="xl:col-span-4 space-y-8">
 <!-- Risk Intelligence Score -->
 <section class="bg-surface-container-low p-8 rounded-2xl border border-outline-variant/10 flex flex-col items-center text-center shadow-xl">
-<h3 class="text-sm font-label uppercase tracking-widest text-on-surface-variant mb-8">Risk Intelligence</h3>
-<!-- Concentric Ring Chart -->
-<div class="relative w-48 h-48 flex items-center justify-center">
-<svg class="w-full h-full -rotate-90">
-<!-- Outer Track -->
-<circle class="text-surface-container-highest" cx="96" cy="96" fill="transparent" r="88" stroke="currentColor" stroke-width="8"></circle>
-<!-- Active Progress -->
-<circle class="text-primary drop-shadow-[0_0_8px_rgba(208,188,255,0.4)]" cx="96" cy="96" fill="transparent" r="88" stroke="currentColor" stroke-dasharray="553" stroke-dashoffset="40" stroke-width="8"></circle>
-<!-- Inner Track -->
-<circle class="text-surface-container-highest/50" cx="96" cy="96" fill="transparent" r="72" stroke="currentColor" stroke-width="4"></circle>
-</svg>
-<div class="absolute flex flex-col items-center">
-<span id="riskScoreVal" class="text-5xl font-headline font-black text-on-background leading-none">A+</span>
-<span class="text-[10px] font-mono text-tertiary mt-2 tracking-widest uppercase">Optimized</span>
+<div class="w-full flex justify-between items-center mb-8">
+    <h3 class="text-[10px] font-label uppercase tracking-[0.2em] text-on-surface-variant">Market Intelligence</h3>
+    <div class="status-indicator flex items-center gap-2">
+        <span class="w-1.5 h-1.5 rounded-full bg-accent-success shadow-[0_0_8px_var(--accent-success)]"></span>
+        <span class="label text-[9px] font-mono uppercase tracking-widest text-accent-success">Feed Live</span>
+    </div>
 </div>
-</div>
-<div id="indicatorGrid" class="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 gap-4 w-full">
-<!-- Indicators will populate here -->
+<!-- Market Indicators Grid -->
+<div class="w-full mt-2">
+    <div class="text-[9px] font-bold text-primary mb-4 flex items-center gap-2">
+        <span class="w-2 h-0.5 bg-primary"></span>
+        LIVE MARKET METRICS
+    </div>
+    <div id="indicatorGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-2 gap-3 w-full max-h-[62vh] overflow-y-auto pr-1">
+        <!-- Indicators shimmer here until data arrives -->
+    </div>
 </div>
 </section>
 <!-- Market Pulse Section -->
@@ -387,7 +385,7 @@
 </div>
 </div>
 </main>
-<script src="/static/script.js?v=9"></script>
+<script src="/static/script.js?v=16"></script>
 <!-- Hidden Legacy IDs to prevent script.js crashes -->
 <div style="display:none;" id="legacy-stubs">
     <div id="detected"></div>

@@ -94,6 +94,7 @@ body.radiant-theme {
   letter-spacing: -0.02em;
   background: linear-gradient(to bottom, #fff, #94a3b8);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -107,11 +108,26 @@ body.radiant-theme {
   display: flex;
   gap: 48px;
   white-space: nowrap;
-  animation: scroll-ticker 60s linear infinite;
+  animation: scroll-ticker 12s linear infinite;
+  width: max-content;
 }
 
 .ticker-track.paused {
   animation-play-state: paused;
+}
+
+.ticker-scrollable {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  cursor: grab;
+}
+
+.ticker-scrollable::-webkit-scrollbar {
+  display: none;
+}
+
+.ticker-scrollable.dragging {
+  cursor: grabbing;
 }
 
 @keyframes scroll-ticker {
@@ -464,6 +480,7 @@ select {
   font-weight: 900;
   background: var(--gradient-radiant);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -482,11 +499,14 @@ select {
 }
 
 .indicator-card {
-  background: var(--glass-surface);
-  padding: 12px;
+  background: rgba(255,255,255,0.03);
+  padding: 10px 14px;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.05);
+  min-height: 60px;
 }
 
 .ind-name { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
@@ -523,4 +543,30 @@ select {
 .history-item:hover {
   background: rgba(255,255,255,0.05);
   border-color: var(--accent-primary);
+}
+
+/* --- Skeleton Loaders --- */
+.skeleton-radiant {
+  background: linear-gradient(to right, rgba(255,255,255,0.03) 8%, rgba(255,255,255,0.08) 18%, rgba(255,255,255,0.03) 33%);
+  background-size: 800px 104px;
+  animation: shimmer 1.2s infinite linear;
+}
+
+@keyframes shimmer {
+  0% { background-position: -468px 0; }
+  100% { background-position: 468px 0; }
+}
+
+.indicator-card.loading .ind-val {
+  min-width: 60px;
+  height: 24px;
+}
+
+.indicator-card.loading .mono-data {
+  min-width: 40px;
+  height: 14px;
+}
+
+.status-indicator .label {
+  transition: all 0.5s ease;
 }

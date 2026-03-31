@@ -14,6 +14,13 @@ const state = {
   }
 };
 
+window.ActiveIndicators = window.ActiveIndicators || {};
+
+const UI_EFFECTS = {
+  syntheticTicks: false,
+  flashOnUpdate: false,
+};
+
 // ── Persist history to localStorage ──────────────────────────────────────
 function _saveHistory() {
   try {
@@ -45,10 +52,15 @@ function _loadHistory() {
 
 // ── Critical indicator groups (left panel) ───────────────────────────────
 const indicatorGroups = [
-  { label: 'US INDICES', color: '#44a0ff', keys: ['sp500', 'nasdaq', 'dow', 'russell2000'] },
-  { label: 'GLOBAL INDICES', color: '#a078ff', keys: ['nifty50', 'sensex', 'ftse100', 'nikkei225', 'hangseng', 'dax'] },
-  { label: 'COMMODITIES', color: '#ffbe55', keys: ['gold', 'silver', 'oil_wti', 'oil_brent', 'natural_gas', 'copper'] },
-  { label: 'CRYPTO', color: '#ff8c42', keys: ['btc_usd', 'eth_usd'] },
+  { label: 'US INDICES', keys: ['sp500', 'nasdaq', 'dow', 'russell2000', 'vix'] },
+  { label: 'GLOBAL INDICES', keys: ['nifty50', 'sensex', 'ftse100', 'nikkei225', 'hangseng', 'dax'] },
+  { label: 'COMMODITIES', keys: ['gold', 'silver', 'oil_wti', 'oil_brent', 'natural_gas', 'copper'] },
+  { label: 'CRYPTO', keys: ['btc_usd', 'eth_usd'] },
+  { label: 'RATES & YIELDS', keys: ['yield_10y', 'yield_2y', 'yield_3m', 'yield_30y', 'yield_curve', 'yield_curve_10y3m', 'fed_funds_rate', 'real_rate_10y', 'real_rate_proxy', 'breakeven_10y'] },
+  { label: 'MACRO', keys: ['inflation_cpi', 'gdp_growth', 'india_gdp_growth', 'unemployment', 'pmi_mfg', 'consumer_sentiment'] },
+  { label: 'FX', keys: ['dxy', 'eur_usd', 'gbp_usd', 'usd_jpy', 'usd_inr', 'usd_cny'] },
+  { label: 'CREDIT & RISK', keys: ['credit_hy', 'credit_ig', 'mort_rate_30y', 'ted_spread'] },
+  { label: 'SECTORS', keys: ['sector_tech', 'sector_energy', 'sector_finance', 'sector_health', 'sector_consumer'] }
 ];
 
 const allLabels = {
@@ -85,30 +97,67 @@ const allLabels = {
 
 function renderIndicatorControls(snapshot) {
   const grid = document.getElementById('indicatorGrid');
-  if (!grid) return;
+  if (!grid) {
+    console.error("Critical: indicatorGrid element missing from DOM");
+    return;
+  }
   const byKey = {};
-  (snapshot.critical_indicators || []).forEach(i => byKey[i.key] = i);
+  (snapshot.critical_indicators || []).forEach(i => { if (i && i.key) byKey[i.key] = i; });
+
+  const activeKeys = new Set([
+    ...Object.keys(window.ActiveIndicators || {}),
+    ...Object.keys(byKey || {})
+  ]);
+  const groupedKeys = new Set();
+  const groupsToRender = [];
+
+  indicatorGroups.forEach(group => {
+    const keys = group.keys.filter(key => activeKeys.has(key));
+    if (keys.length > 0) {
+      keys.forEach(key => groupedKeys.add(key));
+      groupsToRender.push({ label: group.label, keys });
+    }
+  });
+
+  const ungrouped = Array.from(activeKeys)
+    .filter(key => !groupedKeys.has(key))
+    .sort((a, b) => (allLabels[a] || a).localeCompare(allLabels[b] || b));
+
+  if (ungrouped.length > 0) {
+    groupsToRender.push({ label: 'ADDITIONAL', keys: ungrouped });
+  }
+
+  if (groupsToRender.length === 0) {
+    groupsToRender.push({ label: 'MARKET INDICES', keys: ['sp500', 'nasdaq', 'dow'] });
+  }
 
   let html = '';
-  indicatorGroups.forEach(group => {
-    // Elegant group header with Radiant accent
-    html += `<div class="col-span-full text-[10px] font-bold text-primary/50 uppercase tracking-[0.2em] mb-2 mt-4 border-b border-outline-variant/10 pb-1">${group.label}</div>`;
-    
+  groupsToRender.forEach(group => {
+    html += `<div class="col-span-full text-[9px] font-bold text-primary/40 uppercase tracking-[0.2em] mb-1 mt-4 border-b border-outline-variant/10 pb-1">${group.label}</div>`;
+
     group.keys.forEach(key => {
       const item = byKey[key] || { value: null, direction: 'flat', unit: '' };
       const dir = item.direction || 'flat';
-      const val = (item.value === null || item.value === undefined || item.value === '') ? '\u2014' : item.value;
-      
-      const changeNum = (item.change !== undefined && item.change !== null)
-        ? `<div class="text-[10px] font-mono ${dir}">${item.change > 0 ? '+' : ''}${typeof item.change === 'number' ? item.change.toFixed(2) : item.change}%</div>`
-        : '';
+      const isLoading = (item.value === null || item.value === undefined || item.value === '');
+      const numericChange = Number(item.change);
+      const hasNumericChange = Number.isFinite(numericChange);
+
+      const valDisplay = isLoading
+        ? `<div class="skeleton-radiant w-full h-5 rounded opacity-40"></div>`
+        : `<div class="ind-val font-mono ${dir}">${item.value}${item.unit ? '&thinsp;' + item.unit : ''}</div>`;
+
+      const changeDisplay = isLoading
+        ? `<div class="skeleton-radiant w-12 h-3 mt-1 rounded opacity-20"></div>`
+        : (item.change !== undefined && item.change !== null
+            ? `<div class="text-[10px] font-mono ${dir}">${hasNumericChange ? `${numericChange > 0 ? '+' : ''}${numericChange.toFixed(2)}` : item.change}%</div>`
+            : '');
 
       html += `
-        <div class="indicator-card group hover:border-primary/30 transition-all duration-500" data-key="${key}">
+        <div class="indicator-card group hover:border-primary/40 transition-all duration-300" data-key="${key}">
           <div class="ind-name">${allLabels[key] || key}</div>
           <div class="ind-data">
-            <div class="ind-val ${dir}">${val}${item.unit ? '&thinsp;' + item.unit : ''}</div>
-            ${changeNum}
+            ${valDisplay}
+            ${changeDisplay}
           </div>
         </div>`;
     });
@@ -162,7 +211,12 @@ function updateSnapshot(snapshot) {
   document.getElementById('detected').innerHTML = Object.keys(detected).sort().map((k) => `<span class="label">${k}:</span> ${detected[k]}`).join(' | ');
   renderEvidenceCoverage(snapshot.evidence_coverage || {});
 
-  renderIndicatorControls(snapshot);
+  // Use ActiveIndicators global state if available to prevent coupling with snapshot
+  const activeKeys = Object.keys(window.ActiveIndicators || {});
+  if (activeKeys.length === 0) {
+     renderIndicatorControls(snapshot);
+  }
+  
   if (modelBadge) modelBadge.textContent = 'INTEL: STANDBY';
 }
 
@@ -668,39 +722,53 @@ async function exportNote() {
   URL.revokeObjectURL(url);
 }
 
-document.getElementById('runBtn').addEventListener('click', () => {
-  console.log("runBtn clicked");
-  runMain().catch((e) => {
-    const msg = toErrorMessage(e);
-    document.getElementById('responseText').textContent += `\n[ERROR] ${msg}`;
-    failGeneration(msg);
-  });
-});
-document.getElementById('compareBtn').addEventListener('click', () => {
-  console.log("compareBtn clicked");
-  runCompare().catch((e) => {
-    const msg = toErrorMessage(e);
-    document.getElementById('compareA').textContent = '[ERROR] ' + msg;
-    document.getElementById('compareB').textContent = '[ERROR] ' + msg;
-  });
-});
-document.getElementById('exportBtn').addEventListener('click', () => {
-  console.log("exportBtn clicked");
-  exportNote().catch((e) => {
-    document.getElementById('responseText').textContent += `\n[ERROR] ${toErrorMessage(e)}`;
-  });
-});
-
-document.getElementById('question').addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault();
+const runBtnEl = document.getElementById('runBtn');
+if (runBtnEl) {
+  runBtnEl.addEventListener('click', () => {
+    console.log("runBtn clicked");
     runMain().catch((e) => {
       const msg = toErrorMessage(e);
       document.getElementById('responseText').textContent += `\n[ERROR] ${msg}`;
       failGeneration(msg);
     });
-  }
-});
+  });
+}
+
+const compareBtnEl = document.getElementById('compareBtn');
+if (compareBtnEl) {
+  compareBtnEl.addEventListener('click', () => {
+    console.log("compareBtn clicked");
+    runCompare().catch((e) => {
+      const msg = toErrorMessage(e);
+      document.getElementById('compareA').textContent = '[ERROR] ' + msg;
+      document.getElementById('compareB').textContent = '[ERROR] ' + msg;
+    });
+  });
+}
+
+const exportBtnEl = document.getElementById('exportBtn');
+if (exportBtnEl) {
+  exportBtnEl.addEventListener('click', () => {
+    console.log("exportBtn clicked");
+    exportNote().catch((e) => {
+      document.getElementById('responseText').textContent += `\n[ERROR] ${toErrorMessage(e)}`;
+    });
+  });
+}
+
+const questionEl = document.getElementById('question');
+if (questionEl) {
+  questionEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      runMain().catch((e) => {
+        const msg = toErrorMessage(e);
+        document.getElementById('responseText').textContent += `\n[ERROR] ${msg}`;
+        failGeneration(msg);
+      });
+    }
+  });
+}
 
 // ── User timezone & live clock ───────────────────────────────────────────
 const _userTZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -765,31 +833,85 @@ let _nextRefreshEnd = 0;
     _loadHistory();
     renderHistory();
 
+    // Initialize with skeleton loaders immediately
+    renderIndicatorControls({ critical_indicators: [] });
+
     // Optimistic UI Data Loading from Cache or Default Fallback
     try {
         const cacheStr = localStorage.getItem('radiantMarketCache');
+        let useCache = false;
         if (cacheStr) {
             const cachedData = JSON.parse(cacheStr);
-            cachedData.from_cache = true;
-            handleLiveUpdate(cachedData); 
-        } else {
-            // Zero-delay fallback for first-time visits
+            if (cachedData.indicators && cachedData.indicators['sp500']) {
+                cachedData.from_cache = true;
+                handleLiveUpdate(cachedData); 
+                useCache = true;
+            } else {
+                localStorage.removeItem('radiantMarketCache');
+            }
+        }
+        
+        if (!useCache) {
+            // Bloomberg-Grade Global Initial Dataset (45+ indicators)
             const DEFAULT_MARKET_DATA = {
                 from_cache: true,
                 indicators: {
-                    'yield_10y': { label: '10Y Yield', value: '4.42', unit: '%', direction: 'down', change: -0.05 },
-                    'inflation_cpi': { label: 'US CPI', value: '3.10', unit: '%', direction: 'flat', change: 0 },
-                    'dxy': { label: 'DXY Index', value: '104.20', unit: '', direction: 'up', change: 0.15 },
-                    'oil_wti': { label: 'Crude Oil', value: '82.50', unit: '$', direction: 'up', change: 1.2 },
+                    'sp500': { label: 'S&P 500', value: '5214.30', unit: '', direction: 'up', change: 0.45 },
+                    'nasdaq': { label: 'Nasdaq', value: '16321.20', unit: '', direction: 'up', change: 1.12 },
+                    'dow': { label: 'Dow Jones', value: '39412.50', unit: '', direction: 'down', change: -0.15 },
+                    'russell2000': { label: 'Russell 2K', value: '2085.10', unit: '', direction: 'up', change: 0.8 },
+                    'vix': { label: 'VIX INDEX', value: '14.20', unit: '', direction: 'down', change: -0.8 },
+                    'nifty50': { label: 'Nifty 50', value: '22510.50', unit: '', direction: 'up', change: 0.6 },
+                    'sensex': { label: 'Sensex', value: '74120.30', unit: '', direction: 'up', change: 0.5 },
+                    'ftse100': { label: 'FTSE 100', value: '7920.10', unit: '', direction: 'down', change: -0.2 },
+                    'nikkei225': { label: 'Nikkei 225', value: '40810.00', unit: '', direction: 'up', change: 1.5 },
+                    'hangseng': { label: 'Hang Seng', value: '16520.40', unit: '', direction: 'down', change: -1.2 },
+                    'dax': { label: 'DAX', value: '18340.50', unit: '', direction: 'up', change: 0.4 },
+                    'yield_10y': { label: '10Y Yield', value: '4.425', unit: '%', direction: 'down', change: -0.05 },
+                    'yield_2y': { label: '2Y Yield', value: '4.852', unit: '%', direction: 'flat', change: 0 },
+                    'yield_3m': { label: '3M Yield', value: '5.385', unit: '%', direction: 'up', change: 0.01 },
+                    'yield_30y': { label: '30Y Yield', value: '4.561', unit: '%', direction: 'down', change: -0.02 },
+                    'yield_curve': { label: '10Y-2Y', value: '-0.427', unit: '%', direction: 'down', change: -0.01 },
+                    'yield_curve_10y3m': { label: '10Y-3M', value: '-0.960', unit: '%', direction: 'down', change: -0.05 },
                     'fed_funds_rate': { label: 'Fed Funds', value: '5.25', unit: '%', direction: 'flat', change: 0 },
-                    'vix': { label: 'VIX Volatility', value: '14.20', unit: '', direction: 'down', change: -0.8 },
-                    'yield_2y': { label: '2Y Yield', value: '4.85', unit: '%', direction: 'flat', change: 0 },
-                    'credit_hy': { label: 'HY Spread', value: '3.42', unit: '%', direction: 'up', change: 0.11 }
+                    'inflation_cpi': { label: 'US CPI', value: '3.1', unit: '%', direction: 'up', change: 0.1 },
+                    'breakeven_10y': { label: '10Y BE', value: '2.32', unit: '%', direction: 'up', change: 0.02 },
+                    'gdp_growth': { label: 'US GDP', value: '3.2', unit: '%', direction: 'up', change: 0.2 },
+                    'india_gdp_growth': { label: 'India GDP', value: '7.8', unit: '%', direction: 'up', change: 0.3 },
+                    'unemployment': { label: 'Unemp.', value: '3.9', unit: '%', direction: 'up', change: 0.1 },
+                    'pmi_mfg': { label: 'PMI Mfg', value: '50.3', unit: '', direction: 'up', change: 1.2 },
+                    'consumer_sentiment': { label: 'Sentiment', value: '79.4', unit: '', direction: 'down', change: -0.2 },
+                    'dxy': { label: 'DXY Index', value: '104.25', unit: '', direction: 'up', change: 0.12 },
+                    'eur_usd': { label: 'EUR/USD', value: '1.0820', unit: '', direction: 'down', change: -0.05 },
+                    'gbp_usd': { label: 'GBP/USD', value: '1.2640', unit: '', direction: 'up', change: 0.08 },
+                    'usd_jpy': { label: 'USD/JPY', value: '151.40', unit: '', direction: 'up', change: 0.15 },
+                    'usd_inr': { label: 'USD/INR', value: '83.35', unit: '', direction: 'flat', change: 0 },
+                    'usd_cny': { label: 'USD/CNY', value: '7.2405', unit: '', direction: 'up', change: 0.05 },
+                    'gold': { label: 'Gold', value: '2350.20', unit: '$', direction: 'up', change: 0.02 },
+                    'silver': { label: 'Silver', value: '28.15', unit: '$', direction: 'up', change: 0.5 },
+                    'oil_wti': { label: 'WTI Oil', value: '85.40', unit: '$', direction: 'up', change: 1.1 },
+                    'oil_brent': { label: 'Brent Oil', value: '89.20', unit: '$', direction: 'up', change: 1.2 },
+                    'natural_gas': { label: 'Nat Gas', value: '1.85', unit: '$', direction: 'down', change: -2.1 },
+                    'copper': { label: 'Copper', value: '4.25', unit: '$', direction: 'up', change: 0.8 },
+                    'btc_usd': { label: 'Bitcoin', value: '64210.50', unit: '$', direction: 'down', change: -0.82 },
+                    'eth_usd': { label: 'Ethereum', value: '3450.15', unit: '$', direction: 'up', change: 2.14 },
+                    'sector_tech': { label: 'Tech XLK', value: '210.45', unit: '', direction: 'up', change: 1.45 },
+                    'sector_energy': { label: 'Energy XLE', value: '92.10', unit: '', direction: 'down', change: -0.25 },
+                    'sector_finance': { label: 'Fin XLF', value: '41.25', unit: '', direction: 'up', change: 0.12 },
+                    'sector_health': { label: 'Health XLV', value: '145.60', unit: '', direction: 'up', change: 0.05 },
+                    'sector_consumer': { label: 'Cons XLY', value: '184.20', unit: '', direction: 'up', change: 0.42 },
+                    'credit_hy': { label: 'HY Spread', value: '3.42', unit: '%', direction: 'up', change: 0.11 },
+                    'credit_ig': { label: 'IG Spread', value: '1.15', unit: '%', direction: 'flat', change: 0 },
+                    'mort_rate_30y': { label: '30Y Mtg', value: '7.12', unit: '%', direction: 'up', change: 0.05 },
+                    'ted_spread': { label: 'TED Spd', value: '22.5', unit: 'bps', direction: 'up', change: 1.2 }
                 }
             };
             handleLiveUpdate(DEFAULT_MARKET_DATA);
         }
-    } catch (e) {}
+
+    } catch (e) {
+      console.warn('Instant market bootstrap failed:', e);
+    }
 
     connectLiveStream();
 
@@ -797,22 +919,139 @@ let _nextRefreshEnd = 0;
     const tickerContainer = document.querySelector('.ticker-container') || document.querySelector('.glass-ticker');
     const tickerTrack = document.getElementById('tickerTrack');
     if (tickerContainer && tickerTrack) {
+      let justDragged = false;
+
         tickerContainer.addEventListener('click', () => {
+        if (justDragged) {
+          justDragged = false;
+          return;
+        }
             console.log("Ticker click - toggling pause");
             tickerTrack.classList.toggle('paused');
         });
+
+      // User manual horizontal scroll (wheel/touchpad) while auto-scroll continues
+      tickerContainer.addEventListener('wheel', (event) => {
+        const absX = Math.abs(event.deltaX);
+        const absY = Math.abs(event.deltaY);
+        const delta = absX > absY ? event.deltaX : event.deltaY;
+        if (!delta) return;
+        event.preventDefault();
+        tickerContainer.scrollLeft += delta;
+      }, { passive: false });
+
+      // Click-drag horizontal scrolling support
+      let isDragging = false;
+      let dragStartX = 0;
+      let dragStartScrollLeft = 0;
+      let touchStartX = 0;
+      let touchStartScrollLeft = 0;
+
+      tickerContainer.addEventListener('mousedown', (event) => {
+        isDragging = true;
+        tickerContainer.classList.add('dragging');
+        dragStartX = event.pageX;
+        dragStartScrollLeft = tickerContainer.scrollLeft;
+      });
+
+      window.addEventListener('mousemove', (event) => {
+        if (!isDragging) return;
+        const dx = event.pageX - dragStartX;
+        if (Math.abs(dx) > 3) justDragged = true;
+        tickerContainer.scrollLeft = dragStartScrollLeft - dx;
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (!isDragging) return;
+        isDragging = false;
+        tickerContainer.classList.remove('dragging');
+      });
+
+      tickerContainer.addEventListener('mouseleave', () => {
+        if (!isDragging) return;
+        isDragging = false;
+        tickerContainer.classList.remove('dragging');
+      });
+
+      tickerContainer.addEventListener('touchstart', (event) => {
+        if (!event.touches || event.touches.length !== 1) return;
+        touchStartX = event.touches[0].clientX;
+        touchStartScrollLeft = tickerContainer.scrollLeft;
+      }, { passive: true });
+
+      tickerContainer.addEventListener('touchmove', (event) => {
+        if (!event.touches || event.touches.length !== 1) return;
+        const dx = event.touches[0].clientX - touchStartX;
+        if (Math.abs(dx) > 3) justDragged = true;
+        tickerContainer.scrollLeft = touchStartScrollLeft - dx;
+      }, { passive: true });
+    }
+
+    // Optional synthetic visual ticks (disabled to keep colors stable)
+    if (UI_EFFECTS.syntheticTicks) {
+      startLiveTickSimulator();
     }
 })();
+
+// ── Synthetic Live Brokerage Tick Engine ──────────────────────────────
+function startLiveTickSimulator() {
+  if (!UI_EFFECTS.syntheticTicks) return;
+    setInterval(() => {
+        const vals = document.querySelectorAll('.ticker-val, .ind-val');
+        vals.forEach(el => {
+            // Bloomberg-High-Frequency feel: Update 60% of indicators every burst
+            if (Math.random() > 0.4) return;
+
+            const baseText = el.innerText.replace(/[^0-9.-]/g, '');
+            if (!baseText || isNaN(parseFloat(baseText))) return;
+
+            let val = parseFloat(baseText);
+            // Real-time volatility simulator: +/- 0.02% 
+            const nudge = val * (Math.random() * 0.0004 - 0.0002);
+            if (Math.abs(nudge) < 0.0001) return; 
+
+            const newVal = val + nudge;
+            const unitMatch = el.innerHTML.match(/&thinsp;(.*)$/);
+            const unit = unitMatch ? "&thinsp;" + unitMatch[1] : (el.innerHTML.includes('%') ? '%' : '');
+            
+            const numDecimals = (baseText.split('.')[1] || []).length || 2;
+            const formatted = newVal.toLocaleString(undefined, { minimumFractionDigits: Math.max(2, numDecimals), maximumFractionDigits: Math.max(2, numDecimals) });
+            
+            el.innerHTML = formatted + unit;
+            
+            // Flash color: Green for up, Red for down
+            const isUp = nudge > 0;
+            const originalColor = el.style.color || '';
+            el.style.color = isUp ? 'var(--accent-success)' : 'var(--accent-error)';
+            setTimeout(() => { if (el) el.style.color = originalColor; }, 300);
+        });
+
+        // Flash changes up/down on percentage blocks symmetrically
+        const changes = document.querySelectorAll('.ind-data > .font-mono');
+        changes.forEach(el => {
+            if (Math.random() > 0.4) return;
+            const baseText = el.innerText.replace(/[^0-9.-]/g, '');
+            if (!baseText) return;
+            let val = parseFloat(baseText);
+            val += (Math.random() * 0.04 - 0.02);
+            el.innerText = (val > 0 ? '+' : '') + val.toFixed(2) + '%';
+        });
+    }, 600); // 600ms ticks for high-activity feel
+}
 
 // ── Live market data (SSE stream) ────────────────────────────────────────
 // ── Ticker shows macro/rates/FX data (steady updates, not tick-by-tick markets) ────
 const tickerOrder = [
-  'sp500', 'nasdaq', 'dow', 'vix',
-  'yield_10y', 'yield_2y', 'yield_curve',
-  'fed_funds_rate', 'inflation_cpi',
-  'dxy', 'eur_usd', 'usd_jpy',
-  'gold', 'oil_wti', 'btc_usd', 'eth_usd',
-  'credit_hy', 'ted_spread'
+  'sp500', 'nasdaq', 'dow', 'russell2000', 'vix',
+  'nifty50', 'sensex', 'ftse100', 'nikkei225', 'hangseng', 'dax',
+  'yield_10y', 'yield_2y', 'yield_3m', 'yield_30y', 'yield_curve', 'yield_curve_10y3m',
+  'fed_funds_rate', 'inflation_cpi', 'breakeven_10y',
+  'gdp_growth', 'india_gdp_growth', 'unemployment', 'pmi_mfg', 'consumer_sentiment',
+  'dxy', 'eur_usd', 'gbp_usd', 'usd_jpy', 'usd_inr', 'usd_cny',
+  'gold', 'silver', 'oil_wti', 'oil_brent', 'natural_gas', 'copper',
+  'btc_usd', 'eth_usd',
+  'sector_tech', 'sector_energy', 'sector_finance', 'sector_health', 'sector_consumer',
+  'credit_hy', 'credit_ig', 'mort_rate_30y', 'ted_spread'
 ];
 
 function _dirSign(dir) {
@@ -822,13 +1061,21 @@ function _dirSign(dir) {
 function updateTickerBar(inds) {
   const track = document.getElementById('tickerTrack');
   if (!track) return;
-  const items = tickerOrder.map(key => {
+  const orderedKeys = tickerOrder.filter(key => inds[key]);
+  const extraKeys = Object.keys(inds)
+    .filter(key => !tickerOrder.includes(key))
+    .sort((a, b) => (allLabels[a] || a).localeCompare(allLabels[b] || b));
+  const tickerKeys = [...orderedKeys, ...extraKeys];
+
+  const items = tickerKeys.map(key => {
     const v = inds[key];
     if (!v) return '';
     const val = v.value !== null && v.value !== undefined ? v.value : 'N/A';
     const dir = v.direction || 'flat';
+    const changeNum = Number(v.change);
+    const hasChange = Number.isFinite(changeNum);
     const chgEle = (v.change !== null && v.change !== undefined)
-      ? `<span class="ticker-val ${dir}">${v.change > 0 ? '+' : ''}${v.change.toFixed(2)}</span>`
+      ? `<span class="ticker-val ${dir}">${hasChange ? `${changeNum > 0 ? '+' : ''}${changeNum.toFixed(2)}` : v.change}</span>`
       : `<span class="ticker-val">--</span>`;
     return `<div class="ticker-item">
       <span class="ticker-label">${allLabels[key] || key}</span>
@@ -836,24 +1083,30 @@ function updateTickerBar(inds) {
       ${chgEle}
     </div>`;
   }).filter(Boolean).join('');
-  
-  // Update HTML and reset animation duration
-  track.innerHTML = items + items; // 2 copies for -50% loop
-  
-  // Calculate duration once layout settles
+
+  track.innerHTML = items;
+
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-        const halfWidth = track.scrollWidth / 2;
-        if (halfWidth > 0) {
-            const duration = Math.max(30, halfWidth / 50); // 50px/s
-            track.style.animationDuration = `${duration}s`;
-            console.log(`Ticker duration set: ${duration}s`);
-        }
+        const container = track.parentElement;
+        const baseWidth = track.scrollWidth;
+        if (!container || baseWidth <= 0) return;
+
+        const targetWidth = container.clientWidth * 2;
+        const repeatCount = Math.max(2, Math.ceil(targetWidth / baseWidth) + 1);
+        track.innerHTML = new Array(repeatCount).fill(items).join('');
+
+        const pxPerSecond = 80;
+        const duration = Math.max(18, baseWidth / pxPerSecond);
+        track.style.animationDuration = `${duration}s`;
     });
   });
 }
 
+window.ActiveIndicators = window.ActiveIndicators || {};
+
 function handleLiveUpdate(data) {
+  window.ActiveIndicators = window.ActiveIndicators || {};
   const inds = data.indicators || {};
   const isPartial = data.partial === true;
   const source = data.source || '';
@@ -861,9 +1114,14 @@ function handleLiveUpdate(data) {
   const pending = data.pending_sources || [];
   const fromCache = data.from_cache === true;
 
-  // Build synthetic snapshot from whatever indicators we have so far
+  // Merge new indicators into global state so partial streams don't delete defaults
+  Object.keys(inds).forEach(key => {
+      window.ActiveIndicators[key] = inds[key];
+  });
+
+  // Build synthetic snapshot from the accumulated global state
   const syntheticSnapshot = {
-    critical_indicators: Object.entries(inds).map(([key, v]) => ({
+    critical_indicators: Object.entries(window.ActiveIndicators).map(([key, v]) => ({
       key,
       label: v.label,
       value: v.value,
@@ -875,19 +1133,21 @@ function handleLiveUpdate(data) {
   };
   renderIndicatorControls(syntheticSnapshot);
 
-  // Flash changed indicators
-  Object.entries(inds).forEach(([key, v]) => {
-    if (v.direction && v.direction !== 'flat') {
-      const el = document.querySelector(`.indicator-card[data-key="${key}"]`);
-      if (el) {
-        el.style.borderColor = v.direction === 'up' ? 'var(--accent-success)' : 'var(--accent-error)';
-        setTimeout(() => { if (el) el.style.borderColor = 'var(--glass-border)'; }, 1000);
+  // Optional visual flash on update (disabled by default to avoid blinking)
+  if (UI_EFFECTS.flashOnUpdate) {
+    Object.entries(inds).forEach(([key, v]) => {
+      if (v.direction && v.direction !== 'flat') {
+        const el = document.querySelector(`.indicator-card[data-key="${key}"]`);
+        if (el) {
+          el.style.borderColor = v.direction === 'up' ? 'var(--accent-success)' : 'var(--accent-error)';
+          setTimeout(() => { if (el) el.style.borderColor = 'var(--glass-border)'; }, 1000);
+        }
       }
-    }
-  });
+    });
+  }
 
   // Update ticker bar with whatever is available
-  updateTickerBar(inds);
+  updateTickerBar(window.ActiveIndicators);
 
   // Cache data to LocalStorage for instant optimistic loading on next visit
   if (Object.keys(inds).length > 2) {
